@@ -670,3 +670,56 @@ export interface NewsItem {
   category: 'board' | 'training' | 'market' | 'league';
   read: boolean;
 }
+
+// ─── Career World: External World Persistence ───
+
+export type FanGroupKey = 'curva' | 'tradizionali' | 'locali' | 'occasionali' | 'sponsor';
+
+export interface FanGroupState {
+  key: FanGroupKey;
+  label: string;
+  mood: number; // 0-100
+  patience: number; // 0-100
+  influence: number; // 0-100
+  lastReaction?: string;
+}
+
+export interface FanState {
+  overallMood: number; // 0-100
+  groups: FanGroupState[];
+  recentReactions: string[];
+  mostLovedPlayerIds: string[];
+  mostCriticizedPlayerIds: string[];
+}
+
+export type OwnershipType = 'famiglia' | 'fondo' | 'magnate' | 'azionariato' | 'gruppo_industriale';
+
+export interface OwnershipState {
+  ownerType: OwnershipType;
+  ambition: number; // 0-100
+  patience: number; // 0-100
+  liquidity: number; // 0-100
+  prudence: number; // 0-100
+  boardConfidence: number; // 0-100
+  financialStatus: 'solido' | 'equilibrato' | 'in_tensione' | 'critico';
+  currentObjectives: string[];
+}
+
+export interface CareerWorldEvent {
+  id: string;
+  dateLabel: string;
+  title: string;
+  description: string;
+  category: 'fans' | 'ownership' | 'media' | 'sponsor';
+  impact: number; // -10 to +10
+}
+
+export interface CareerWorldState {
+  clubId: string;
+  fanState: FanState;
+  ownershipState: OwnershipState;
+  activeEvents: CareerWorldEvent[];
+  historicalEvents: CareerWorldEvent[];
+  createdAt: string;
+  updatedAt: string;
+}
