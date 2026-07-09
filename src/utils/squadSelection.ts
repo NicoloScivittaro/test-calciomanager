@@ -1,22 +1,34 @@
-import { Player, Tactic } from '../types';
-import { getPlayerSlotFitScore, POSITION_PRESETS } from './tacticsEngine';
+import { Player, SlotInstruction, Tactic } from '../types';
+import { getDefaultSlotInstructions, getInstructionCompatibility, getPlayerSlotFitScore, POSITION_PRESETS } from './tacticsEngine';
 
-export const selectBestLineupForModule = (players: Player[], module: Tactic['module']) => {
+// T2: la scelta automatica considera anche il ruolo/compito assegnato allo slot, non solo il ruolo
+// base del modulo — cosi' non mette sempre il miglior overall se e' inadatto al compito richiesto
+// (es. un centrale lento non diventa mai il wingback_attack ideale solo perche' ha overall alto).
+export const selectBestLineupForModule = (
+  players: Player[],
+  module: Tactic['module'],
+  slotInstructions?: Record<string, SlotInstruction>
+) => {
   const slots = POSITION_PRESETS[module];
+  const instructions = slotInstructions ?? getDefaultSlotInstructions(module);
   const used = new Set<string>();
 
-  const starters = slots.map(slot => {
+  const starters = slots.map((slot, index) => {
+    const instruction = instructions[`slot_${index}`];
     const candidates = players
       .filter(player => !used.has(player.id) && player.status !== 'Infortunato')
       .map(player => {
         const fit = getPlayerSlotFitScore(player, slot.role);
+        const instructionFit = instruction ? getInstructionCompatibility(player, instruction.role).score : fit;
+        // Media dei due fit: il ruolo base del modulo conta quanto il compito specifico assegnato.
+        const combinedFit = (fit + instructionFit) / 2;
         const conditionScore = player.condition * 0.08;
         const formScore = player.form * 0.9;
-        const roleBonus = fit >= 0.92 ? 8 : fit >= 0.7 ? 2.5 : -9;
+        const roleBonus = combinedFit >= 0.92 ? 8 : combinedFit >= 0.7 ? 2.5 : -9;
         const fatiguePenalty = player.status === 'Stanco' ? 5 : 0;
         return {
           player,
-          score: player.overall * fit + conditionScore + formScore + roleBonus - fatiguePenalty
+          score: player.overall * combinedFit + conditionScore + formScore + roleBonus - fatiguePenalty
         };
       })
       .sort((a, b) => b.score - a.score || b.player.overall - a.player.overall);

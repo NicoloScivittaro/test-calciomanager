@@ -336,13 +336,10 @@ h1, h2, h3, h4, h5, h6 {
 
 .modal-backdrop {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
+  inset: 0;
   background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(6px);
-  z-index: 1000;
+  z-index: 4000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -356,6 +353,8 @@ h1, h2, h3, h4, h5, h6 {
   padding: 25px;
   width: 500px;
   max-width: 100%;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   box-shadow: var(--shadow-md);
 }
 
@@ -693,6 +692,13 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 0.96rem;
 }
 
+.live-phase-ribbon p {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
 .live-pitch-visual::before {
   content: "";
   position: absolute;
@@ -881,20 +887,38 @@ h1, h2, h3, h4, h5, h6 {
 
 .live-opponent-dot {
   z-index: 7;
-  min-width: 36px;
+  min-width: 48px;
+  max-width: 62px;
   height: 24px;
   padding: 0 7px;
   border: 1px solid rgba(239, 68, 68, 0.34);
   border-radius: 999px;
-  background: rgba(60, 12, 18, 0.5);
+  background: rgba(60, 12, 18, 0.58);
   color: #FCA5A5;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.5rem;
-  font-weight: 900;
-  opacity: 0.72;
-  text-transform: uppercase;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.52rem;
+  font-weight: 800;
+  opacity: 0.82;
+  text-transform: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, opacity 0.25s ease;
+}
+
+.live-opponent-dot.pressing {
+  border-color: rgba(245, 158, 11, 0.85);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+  color: #FDE68A;
+  opacity: 1;
+  animation: live-opponent-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-opponent-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.28); }
 }
 
 .live-ball {
@@ -973,6 +997,63 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-secondary);
   font-size: 0.66rem;
   font-weight: 800;
+}
+
+.live-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+}
+
+.live-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.live-legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+  font-style: normal;
+}
+
+.live-legend-swatch.defense {
+  background: rgba(96, 165, 250, 0.85);
+}
+
+.live-legend-swatch.press {
+  background: rgba(245, 158, 11, 0.85);
+}
+
+.live-legend-swatch.fit-ok {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid var(--color-pitch);
+}
+
+.live-legend-swatch.fit-bad {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid var(--color-danger);
+}
+
+.live-legend-swatch.opponent {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.55);
 }
 
 .goal-flash-card {
@@ -2099,4 +2180,498 @@ body::before {
   background: rgba(8, 14, 11, 0.54) !important;
   border-color: rgba(202,255,224,0.12) !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 10px 24px rgba(0,0,0,0.18);
+}
+
+/* ─── Live Tactical Viewer: replay tattico deterministico (PitchRenderer + MatchPlaybackControls) ─── */
+
+.pitch-viewer-fallback {
+  padding: 18px 20px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.pitch-viewer-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+
+.pitch-overlay-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pitch-overlay-toggle {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.pitch-overlay-toggle.active {
+  color: #042F1A;
+  background: var(--color-pitch);
+  border-color: var(--color-pitch);
+}
+
+.pitch-overlay-toggle:focus-visible,
+.pitch-control-button:focus-visible,
+.pitch-speed-button:focus-visible,
+.pitch-timeline-marker:focus-visible,
+.pitch-timeline-scrubber:focus-visible {
+  outline: 2px solid var(--color-lime);
+  outline-offset: 2px;
+}
+
+.pitch-viewer {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 0.68;
+  margin: 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+}
+
+.pitch-viewer-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 20px;
+}
+
+.pitch-viewer-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.pitch-grass-base {
+  fill: #0B3B22;
+}
+
+.pitch-grass-stripe-a {
+  fill: rgba(255, 255, 255, 0.02);
+}
+
+.pitch-grass-stripe-b {
+  fill: rgba(0, 0, 0, 0.05);
+}
+
+.pitch-lines rect,
+.pitch-lines line,
+.pitch-lines circle {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 0.35;
+  vector-effect: non-scaling-stroke;
+}
+
+.pitch-spot {
+  fill: rgba(255, 255, 255, 0.55);
+  stroke: none;
+}
+
+.pitch-overlay-width {
+  opacity: 0.14;
+}
+
+.pitch-overlay-depth {
+  stroke-width: 0.6;
+  opacity: 0.75;
+}
+
+.pitch-overlay-defensive-line {
+  stroke: rgba(248, 250, 252, 0.65);
+  stroke-width: 0.35;
+  stroke-dasharray: 2 1.4;
+}
+
+.pitch-overlay-pass {
+  stroke: #F8FAFC;
+  stroke-width: 0.5;
+  opacity: 0.85;
+}
+
+.pitch-overlay-pressing {
+  fill: rgba(239, 68, 68, 0.16);
+  stroke: rgba(239, 68, 68, 0.55);
+  stroke-width: 0.3;
+}
+
+.pitch-ball {
+  fill: #FDE68A;
+  stroke: #92400E;
+  stroke-width: 0.25;
+}
+
+.pitch-player-marker {
+  cursor: pointer;
+}
+
+.pitch-player-marker:focus {
+  outline: none;
+}
+
+.pitch-player-circle {
+  stroke-width: 0.4;
+}
+
+.pitch-player-gk-ring {
+  fill: none;
+  stroke: #FBBF24;
+  stroke-width: 0.3;
+  stroke-dasharray: 0.6 0.5;
+}
+
+.pitch-player-carrier-ring {
+  fill: none;
+  stroke: #FDE68A;
+  stroke-width: 0.45;
+}
+
+.pitch-player-selected-ring {
+  fill: none;
+  stroke: #38BDF8;
+  stroke-width: 0.4;
+}
+
+.pitch-player-highlight-ring {
+  fill: none;
+  stroke: var(--color-gold);
+  stroke-width: 0.4;
+  stroke-dasharray: 0.8 0.5;
+}
+
+.pitch-player-number {
+  font-size: 2.6px;
+  font-weight: 800;
+  fill: #F8FAFC;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+.pitch-player-name {
+  font-size: 2.1px;
+  font-weight: 700;
+  fill: #F8FAFC;
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.65);
+  stroke-width: 0.4;
+}
+
+.pitch-viewer-event-banner {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(4, 8, 6, 0.82);
+  border: 1px solid var(--color-gold);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  max-width: 92%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pitch-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pitch-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pitch-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.pitch-control-speeds {
+  display: flex;
+  gap: 4px;
+}
+
+.pitch-speed-button {
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.pitch-speed-button.active {
+  color: #042F1A;
+  background: var(--color-lime);
+  border-color: var(--color-lime);
+}
+
+.pitch-control-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.pitch-control-readout strong {
+  color: var(--color-lime);
+  font-family: var(--font-heading);
+}
+
+.pitch-control-possession {
+  color: var(--text-muted);
+}
+
+.pitch-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pitch-timeline-scrubber {
+  width: 100%;
+  accent-color: var(--color-pitch);
+}
+
+.pitch-timeline-markers {
+  position: relative;
+  height: 18px;
+}
+
+.pitch-timeline-marker {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface-elevated);
+  font-size: 0.6rem;
+  line-height: 14px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.pitch-timeline-marker-goal {
+  border-color: var(--color-pitch);
+}
+
+.pitch-timeline-marker-card {
+  border-color: var(--color-gold);
+}
+
+.pitch-timeline-marker-substitution {
+  border-color: var(--text-muted);
+}
+
+.pitch-timeline-marker-opponent {
+  opacity: 0.75;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   UI/UX Polish — sistema modali (BaseModal) + design system leggero
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --transition-fast: 140ms ease;
+  --transition-modal: 180ms ease-out;
+  --shadow-active: 0 0 0 1px rgba(16, 185, 129, 0.32), 0 10px 26px rgba(0, 0, 0, 0.4);
+}
+
+/* Le modali sono montate via portal su <body> (BaseModal/ModalPortal): l'overlay e' quindi sempre
+   relativo al viewport reale, mai al box (spesso animato/scrollato) del suo antenato React. */
+.ui-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 5, 3, 0.74);
+  backdrop-filter: blur(8px) saturate(1.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.ui-modal-content {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(16, 185, 129, 0.14), transparent 34%),
+    linear-gradient(145deg, rgba(17, 28, 23, 0.97), rgba(6, 11, 8, 0.99));
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 22px;
+}
+
+.ui-modal-content:focus {
+  outline: none;
+}
+
+.ui-modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  z-index: 2;
+}
+
+.ui-modal-close:hover {
+  color: var(--text-primary);
+  border-color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.ui-modal-close:focus-visible {
+  outline: 2px solid var(--color-lime);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .ui-modal-backdrop,
+  .modal-backdrop,
+  .player-profile-backdrop {
+    padding: 10px;
+  }
+  .ui-modal-content {
+    max-height: calc(100vh - 20px);
+    padding: 16px;
+    border-radius: var(--radius-md);
+  }
+}
+
+/* Focus visibile globale: il reset toglie l'outline di default, lo ripristiniamo solo per la
+   navigazione da tastiera (:focus-visible), coerente su bottoni/link/campi form. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-lime);
+  outline-offset: 2px;
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+  transform: none;
+}
+
+/* Piccoli helper riutilizzabili, additivi rispetto a card-premium/btn/badge gia' esistenti. */
+.ui-section-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ui-stat-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-light);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.ui-stat-pill strong {
+  color: var(--text-primary);
+  font-family: var(--font-heading);
+}
+
+.ui-empty-state {
+  text-align: center;
+  padding: 28px 20px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ui-empty-state svg {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.ui-empty-state p {
+  font-size: 0.82rem;
+  max-width: 360px;
+}
+
+/* Hover leggero e coerente per le card cliccabili (mercato, dashboard, database) senza appesantire. */
+.ui-card-hover {
+  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ui-card-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(16, 185, 129, 0.4);
+  box-shadow: var(--shadow-active);
 }

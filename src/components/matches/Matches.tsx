@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Trophy, Calendar, Eye, X, BarChart2, Zap } from 'lucide-react';
-import { ClubAIState, ClubProfile, Match, Player, PlayerSeasonStat, Standing } from '../../types';
+import { ClubAIState, ClubProfile, LeagueSystemState, Match, Player, PlayerSeasonStat, Standing } from '../../types';
 import TeamLogo from '../common/TeamLogo';
 import { getClubByName } from '../../data/serieAData';
 import ClubInfoModal from '../common/ClubInfoModal';
 import PlayerProfileModal from '../common/PlayerProfileModal';
 import { sortAssistmen, sortScorers } from '../../utils/playerSeasonStats';
+import { ModalPortal, useModalBehavior } from '../common/BaseModal';
 
 interface MatchesProps {
   calendar: Match[];
@@ -17,16 +18,25 @@ interface MatchesProps {
   playerStats: PlayerSeasonStat[];
   onCreateTransferTarget: (player: Player, clubName: string) => void;
   onNavigate: (tab: string) => void;
+  leagueSystem: LeagueSystemState | null;
 }
 
 type MatchesTab = 'table' | 'scorers' | 'assists' | 'calendar';
 type LeaderboardKind = 'scorers' | 'assists';
 
-export default function Matches({ calendar, standings, players, teamName, clubWorld, playerStats, onCreateTransferTarget, onNavigate }: MatchesProps) {
+export default function Matches({ calendar, standings, players, teamName, clubWorld, playerStats, onCreateTransferTarget, onNavigate, leagueSystem }: MatchesProps) {
   const [activeTab, setActiveTab] = useState<MatchesTab>('table');
   const [selectedMatchDetails, setSelectedMatchDetails] = useState<Match | null>(null);
   const [selectedClubInfo, setSelectedClubInfo] = useState<ClubProfile | null>(null);
   const [playerSheet, setPlayerSheet] = useState<{ player: Player; mode: 'quick' | 'full' } | null>(null);
+  useModalBehavior(!!selectedMatchDetails, () => setSelectedMatchDetails(null));
+  const [standingsDivision, setStandingsDivision] = useState<'mine' | 'other'>('mine');
+
+  const userDivision = leagueSystem ? (leagueSystem.clubCompetitionMap[getClubByName(teamName)?.id ?? ''] ?? 'serie_a') : 'serie_a';
+  const otherDivision = userDivision === 'serie_a' ? 'serie_b' : 'serie_a';
+  const standingsForView = standingsDivision === 'mine' || !leagueSystem
+    ? standings
+    : leagueSystem.competitions[otherDivision].standings;
 
   const clubButtonStyle: React.CSSProperties = {
     display: 'inline-flex',
@@ -54,7 +64,7 @@ export default function Matches({ calendar, standings, players, teamName, clubWo
   };
 
   // Sorting teams
-  const sortedStandings = [...standings].sort((a, b) => {
+  const sortedStandings = [...standingsForView].sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points;
     if (b.goalDiff !== a.goalDiff) return b.goalDiff - a.goalDiff;
     return b.goalsFor - a.goalsFor;
@@ -319,6 +329,24 @@ export default function Matches({ calendar, standings, players, teamName, clubWo
             className="card-premium"
             style={{ padding: 0 }}
           >
+            {leagueSystem && (
+              <div style={{ display: 'flex', gap: '8px', padding: '14px 14px 0' }}>
+                <button
+                  onClick={() => setStandingsDivision('mine')}
+                  className={standingsDivision === 'mine' ? 'btn-primary' : 'btn-secondary'}
+                  style={{ padding: '6px 12px', fontSize: '0.72rem' }}
+                >
+                  {userDivision === 'serie_a' ? 'Serie A' : 'Serie B'}
+                </button>
+                <button
+                  onClick={() => setStandingsDivision('other')}
+                  className={standingsDivision === 'other' ? 'btn-primary' : 'btn-secondary'}
+                  style={{ padding: '6px 12px', fontSize: '0.72rem' }}
+                >
+                  {otherDivision === 'serie_a' ? 'Serie A' : 'Serie B'}
+                </button>
+              </div>
+            )}
             <table className="premium-table">
               <thead>
                 <tr>
@@ -529,6 +557,7 @@ export default function Matches({ calendar, standings, players, teamName, clubWo
       </AnimatePresence>
 
       {/* Match details report Modal */}
+      <ModalPortal>
       <AnimatePresence>
         {selectedMatchDetails && (
           <div className="modal-backdrop" onClick={() => setSelectedMatchDetails(null)}>
@@ -545,6 +574,7 @@ export default function Matches({ calendar, standings, players, teamName, clubWo
                 <h3 style={{ fontSize: '1rem', fontWeight: 800 }}>Dettaglio Match</h3>
                 <button
                   onClick={() => setSelectedMatchDetails(null)}
+                  aria-label="Chiudi dettaglio match"
                   style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
                 >
                   <X size={18} />
@@ -639,6 +669,7 @@ export default function Matches({ calendar, standings, players, teamName, clubWo
           </div>
         )}
       </AnimatePresence>
+      </ModalPortal>
 
       <ClubInfoModal
         club={selectedClubInfo}

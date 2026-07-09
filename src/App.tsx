@@ -28,15 +28,41 @@ import {
   createInitialNews,
   getClubById
 } from './data/serieAData';
-import { Player, Tactic, Match, Standing, Negotiation, NewsItem, ClubProfile, ClubAIState, IncomingTransferOffer, ClubHistoryState, ClubMemoryDraft, TeamDNAState, RivalTacticalMemory, SeasonNarrativeState, PlayerSeasonStat } from './types';
+import { Player, Tactic, Match, Standing, Negotiation, NewsItem, ClubProfile, ClubAIState, IncomingTransferOffer, ClubHistoryState, ClubMemoryDraft, TeamDNAState, RivalTacticalMemory, SeasonNarrativeState, PlayerSeasonStat, EmotionalNarrativeState, CareerWorldState, PlayerConversationState, LeagueSystemState, ClubStaffRole, FacilityType } from './types';
 import { createInitialClubWorld } from './utils/clubAI';
-import { appendClubMemory, createInitialClubHistory, normalizeClubHistory } from './utils/clubHistory';
+import { createPlaceholderPlayersForSerieBClub } from './data/realSerieBRosters2025';
+import { SERIE_B_CLUBS } from './data/serieBData2025';
+import {
+  createInitialLeagueSystem,
+  createInitialSerieBClubWorld,
+  deriveClubMatchCalendar,
+  getAnyClubByName,
+  getClubDivision,
+  getSeasonStartYear,
+  normalizeLeagueSystem
+} from './utils/leagueSystem';
+import { appendClubMemory, createInitialClubHistory, CURRENT_SEASON, normalizeClubHistory } from './utils/clubHistory';
 import { ensurePlayerPersonalities } from './utils/playerPersonality';
 import { createInitialRivalMemories, normalizeRivalMemories } from './utils/rivalAI';
 import { createInitialSeasonNarrative, isDecisionWorthyArc, normalizeSeasonNarrative, resolveNarrativeArcChoice } from './utils/seasonNarrative';
 import { createInitialPlayerSeasonStats, normalizePlayerSeasonStats, syncPlayerSeasonStatsRosters } from './utils/playerSeasonStats';
 import { selectBestLineupForModule } from './utils/squadSelection';
 import { createInitialTeamDNA, evolveTeamDNAFromTactic, evolveTeamDNAFromTransfer, getDNAMarketAdjustment, normalizeTeamDNA } from './utils/teamDNA';
+import { createInitialEmotionalNarrativeState, normalizeEmotionalNarrativeState } from './utils/emotionalNarratives';
+import { createInitialCareerWorld, normalizeCareerWorld } from './utils/careerWorld';
+import { canHireClubStaff, hireClubStaffMember } from './utils/staff';
+import { canStartFacilityUpgrade, getFacilityUpgradeCost, startFacilityUpgrade } from './utils/facilities';
+import { ensureSeasonalYouthIntake, promoteYouthPlayer, releaseYouthPlayer } from './utils/youthAcademy';
+import { calculateClubWageBudget } from './utils/playerContracts';
+import { resolvePressConference } from './utils/mediaEngine';
+import { createPlayingTimePromise } from './utils/playerPromises';
+import { createInitialPlayerConversationState, normalizePlayerConversationState } from './utils/playerDialogue';
+
+// Serie B non ha ancora rose reali verificate (vedi src/data/serieBSourceManifest.ts):
+// per un club di Serie B si generano sempre rose placeholder, mai la rosa di un club diverso.
+const createPlayersForActiveClub = (club: ClubProfile): Player[] => (
+  getClubDivision(club) === 'serie_b' ? createPlaceholderPlayersForSerieBClub(club) : createPlayersForClub(club)
+);
 
 const createDefaultStarters = (players: Player[]) => {
   return selectBestLineupForModule(players, '4-3-3').starters;
@@ -123,6 +149,10 @@ const CAREER_STORAGE_KEYS = [
   'cm_team_dna',
   'cm_rival_memories',
   'cm_season_narrative',
+  'cm_emotional_narratives',
+  'cm_career_world',
+  'cm_player_conversations',
+  'cm_league_system',
   'cm_selected_club',
   'cm_data_version'
 ];
@@ -146,12 +176,12 @@ export default function App() {
   const [players, setPlayers] = useState<Player[]>(() => {
     try {
       const storedVersion = localStorage.getItem('cm_data_version');
-      if (storedVersion !== DATA_VERSION) return createPlayersForClub(activeClub);
+      if (storedVersion !== DATA_VERSION) return createPlayersForActiveClub(activeClub);
 
       const stored = localStorage.getItem('cm_players');
-      return stored ? JSON.parse(stored) : createPlayersForClub(activeClub);
+      return stored ? JSON.parse(stored) : createPlayersForActiveClub(activeClub);
     } catch {
-      return createPlayersForClub(activeClub);
+      return createPlayersForActiveClub(activeClub);
     }
   });
 
@@ -218,20 +248,20 @@ export default function App() {
 
   const [starters, setStarters] = useState<string[]>(() => {
     try {
-      const defaultPlayers = createPlayersForClub(activeClub);
+      const defaultPlayers = createPlayersForActiveClub(activeClub);
       const storedVersion = localStorage.getItem('cm_data_version');
       if (storedVersion !== DATA_VERSION) return createDefaultStarters(defaultPlayers);
 
       const stored = localStorage.getItem('cm_starters');
       return stored ? JSON.parse(stored) : createDefaultStarters(defaultPlayers);
     } catch {
-      return createDefaultStarters(createPlayersForClub(activeClub));
+      return createDefaultStarters(createPlayersForActiveClub(activeClub));
     }
   });
 
   const [bench, setBench] = useState<string[]>(() => {
     try {
-      const defaultPlayers = createPlayersForClub(activeClub);
+      const defaultPlayers = createPlayersForActiveClub(activeClub);
       const defaultStarters = createDefaultStarters(defaultPlayers);
       const storedVersion = localStorage.getItem('cm_data_version');
       if (storedVersion !== DATA_VERSION) return createDefaultBench(defaultPlayers, defaultStarters);
@@ -241,13 +271,13 @@ export default function App() {
       
       return createDefaultBench(defaultPlayers, defaultStarters);
     } catch {
-      const defaultPlayers = createPlayersForClub(activeClub);
+      const defaultPlayers = createPlayersForActiveClub(activeClub);
       return createDefaultBench(defaultPlayers, createDefaultStarters(defaultPlayers));
     }
   });
 
   const [tactic, setTactic] = useState<Tactic>(() => {
-    const defaultTactic = createDefaultTactic(createPlayersForClub(activeClub));
+    const defaultTactic = createDefaultTactic(createPlayersForActiveClub(activeClub));
     try {
       const storedVersion = localStorage.getItem('cm_data_version');
       if (storedVersion !== DATA_VERSION) return defaultTactic;
@@ -301,19 +331,19 @@ export default function App() {
   const [clubHistory, setClubHistory] = useState<ClubHistoryState>(() => {
     try {
       const storedVersion = localStorage.getItem('cm_data_version');
-      if (storedVersion !== DATA_VERSION) return createInitialClubHistory(activeClub, MANAGER_NAME, createPlayersForClub(activeClub));
+      if (storedVersion !== DATA_VERSION) return createInitialClubHistory(activeClub, MANAGER_NAME, createPlayersForActiveClub(activeClub));
 
       const stored = localStorage.getItem('cm_club_history');
-      return stored ? normalizeClubHistory(JSON.parse(stored)) : createInitialClubHistory(activeClub, MANAGER_NAME, createPlayersForClub(activeClub));
+      return stored ? normalizeClubHistory(JSON.parse(stored)) : createInitialClubHistory(activeClub, MANAGER_NAME, createPlayersForActiveClub(activeClub));
     } catch {
-      return createInitialClubHistory(activeClub, MANAGER_NAME, createPlayersForClub(activeClub));
+      return createInitialClubHistory(activeClub, MANAGER_NAME, createPlayersForActiveClub(activeClub));
     }
   });
 
   const [teamDNA, setTeamDNA] = useState<TeamDNAState>(() => {
     try {
       const storedVersion = localStorage.getItem('cm_data_version');
-      const basePlayers = createPlayersForClub(activeClub);
+      const basePlayers = createPlayersForActiveClub(activeClub);
       if (storedVersion !== DATA_VERSION) return createInitialTeamDNA(activeClub, basePlayers, createDefaultTactic(basePlayers));
 
       const stored = localStorage.getItem('cm_team_dna');
@@ -321,7 +351,7 @@ export default function App() {
         ? normalizeTeamDNA(JSON.parse(stored), activeClub, basePlayers, tactic)
         : createInitialTeamDNA(activeClub, basePlayers, tactic);
     } catch {
-      const basePlayers = createPlayersForClub(activeClub);
+      const basePlayers = createPlayersForActiveClub(activeClub);
       return createInitialTeamDNA(activeClub, basePlayers, createDefaultTactic(basePlayers));
     }
   });
@@ -351,6 +381,57 @@ export default function App() {
         : createInitialSeasonNarrative(activeClub, teamDNA);
     } catch {
       return createInitialSeasonNarrative(activeClub, teamDNA);
+    }
+  });
+
+  const [emotionalNarratives, setEmotionalNarratives] = useState<EmotionalNarrativeState>(() => {
+    try {
+      const storedVersion = localStorage.getItem('cm_data_version');
+      if (storedVersion !== DATA_VERSION) return createInitialEmotionalNarrativeState();
+
+      const stored = localStorage.getItem('cm_emotional_narratives');
+      return stored ? normalizeEmotionalNarrativeState(JSON.parse(stored)) : createInitialEmotionalNarrativeState();
+    } catch {
+      return createInitialEmotionalNarrativeState();
+    }
+  });
+
+  const [careerWorld, setCareerWorld] = useState<CareerWorldState>(() => {
+    try {
+      const storedVersion = localStorage.getItem('cm_data_version');
+      if (storedVersion !== DATA_VERSION) return createInitialCareerWorld(activeClub, players);
+
+      const stored = localStorage.getItem('cm_career_world');
+      return stored ? normalizeCareerWorld(JSON.parse(stored), activeClub, players) : createInitialCareerWorld(activeClub, players);
+    } catch {
+      return createInitialCareerWorld(activeClub, players);
+    }
+  });
+
+  const [playerConversations, setPlayerConversations] = useState<PlayerConversationState>(() => {
+    try {
+      const storedVersion = localStorage.getItem('cm_data_version');
+      if (storedVersion !== DATA_VERSION) return createInitialPlayerConversationState();
+
+      const stored = localStorage.getItem('cm_player_conversations');
+      return stored ? normalizePlayerConversationState(JSON.parse(stored)) : createInitialPlayerConversationState();
+    } catch {
+      return createInitialPlayerConversationState();
+    }
+  });
+
+  // null = modalita legacy (salvataggio precedente alla Fase multi-divisione, o dati non validi):
+  // l'app si comporta esattamente come prima, mono Serie A, senza alcuna Serie B.
+  const [leagueSystem, setLeagueSystem] = useState<LeagueSystemState | null>(() => {
+    try {
+      const storedVersion = localStorage.getItem('cm_data_version');
+      if (storedVersion !== DATA_VERSION) return createInitialLeagueSystem(activeClub.id);
+
+      const stored = localStorage.getItem('cm_league_system');
+      if (!stored) return null;
+      return normalizeLeagueSystem(JSON.parse(stored), activeClub.id);
+    } catch {
+      return null;
     }
   });
 
@@ -450,6 +531,26 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedClub) return;
+    localStorage.setItem('cm_emotional_narratives', JSON.stringify(emotionalNarratives));
+  }, [emotionalNarratives, selectedClub]);
+
+  useEffect(() => {
+    if (!selectedClub) return;
+    localStorage.setItem('cm_career_world', JSON.stringify(careerWorld));
+  }, [careerWorld, selectedClub]);
+
+  useEffect(() => {
+    if (!selectedClub) return;
+    localStorage.setItem('cm_player_conversations', JSON.stringify(playerConversations));
+  }, [playerConversations, selectedClub]);
+
+  useEffect(() => {
+    if (!selectedClub || !leagueSystem) return;
+    localStorage.setItem('cm_league_system', JSON.stringify(leagueSystem));
+  }, [leagueSystem, selectedClub]);
+
+  useEffect(() => {
+    if (!selectedClub) return;
     setClubWorld(current => current.map(club => (
       club.name === selectedClub.name
         ? { ...club, roster: players, budget }
@@ -478,19 +579,40 @@ export default function App() {
   const handleStartCareer = (club: ClubProfile) => {
     CAREER_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
 
-    const freshPlayers = createPlayersForClub(club);
-    const freshCalendar = generateCalendar(club.name);
-    const freshStandings = calculateInitialStandings();
+    const league = createInitialLeagueSystem(club.id);
+    const userDivision = getClubDivision(club);
+    const userCompetition = league.competitions[userDivision];
+    const stadiumFor = (name: string) => getAnyClubByName(name)?.stadium ?? 'Stadio Comunale';
+    const freshCalendar = deriveClubMatchCalendar(userCompetition.fixtures, club.id, stadiumFor, getSeasonStartYear(league.season));
+    const leagueWithCalendar: LeagueSystemState = {
+      ...league,
+      competitions: { ...league.competitions, [userDivision]: { ...userCompetition, calendar: freshCalendar } },
+    };
+
+    const freshPlayers = createPlayersForActiveClub(club);
+    const freshStandings = userCompetition.standings;
     const freshStarters = createDefaultStarters(freshPlayers);
     const freshBench = createDefaultBench(freshPlayers, freshStarters);
     const freshTactic = createDefaultTactic(freshPlayers);
     const freshDNA = createInitialTeamDNA(club, freshPlayers, freshTactic);
 
+    const freshCareerWorld = createInitialCareerWorld(club, freshPlayers);
+    // Fase 9: il vivaio parte gia' popolato (4-7 prospetti), mai generato di nuovo ad ogni render.
+    const freshYouthIntake = ensureSeasonalYouthIntake(
+      freshPlayers,
+      freshCareerWorld.youthAcademyState,
+      club,
+      freshCareerWorld.clubFacilitiesState,
+      freshCareerWorld.clubStaffState,
+      CURRENT_SEASON,
+      freshDNA
+    );
+
     localStorage.setItem('cm_data_version', DATA_VERSION);
     localStorage.setItem('cm_selected_club', club.id);
     setSelectedClub(club);
     setCurrentTab('dashboard');
-    setPlayers(freshPlayers);
+    setPlayers(freshYouthIntake.players);
     setBudget(club.transferBudget);
     setCalendar(freshCalendar);
     setStandings(freshStandings);
@@ -499,7 +621,7 @@ export default function App() {
     setStarters(freshStarters);
     setBench(freshBench);
     setTactic(freshTactic);
-    const freshWorld = createInitialClubWorld();
+    const freshWorld = userDivision === 'serie_b' ? createInitialSerieBClubWorld() : createInitialClubWorld();
     setClubWorld(freshWorld);
     setPlayerStats(createInitialPlayerSeasonStats(club.name, freshPlayers, freshWorld));
     setIncomingOffers([]);
@@ -507,6 +629,10 @@ export default function App() {
     setTeamDNA(freshDNA);
     setRivalMemories(createInitialRivalMemories(club.name));
     setSeasonNarrative(createInitialSeasonNarrative(club, freshDNA));
+    setEmotionalNarratives(createInitialEmotionalNarrativeState());
+    setCareerWorld({ ...freshCareerWorld, youthAcademyState: freshYouthIntake.state });
+    setPlayerConversations(createInitialPlayerConversationState());
+    setLeagueSystem(leagueWithCalendar);
   };
 
   const handleRestartCareer = () => {
@@ -516,7 +642,6 @@ export default function App() {
     CAREER_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
     setSelectedClub(null);
     setCurrentTab('dashboard');
-    setPlayers(createPlayersForClub(DEFAULT_CLUB_PROFILE));
     setBudget(DEFAULT_CLUB_PROFILE.transferBudget);
     setCalendar(generateCalendar(DEFAULT_CLUB_PROFILE.name));
     setStandings(calculateInitialStandings());
@@ -537,10 +662,37 @@ export default function App() {
     setTeamDNA(defaultDNA);
     setRivalMemories(createInitialRivalMemories(DEFAULT_CLUB_PROFILE.name));
     setSeasonNarrative(createInitialSeasonNarrative(DEFAULT_CLUB_PROFILE, defaultDNA));
+    setEmotionalNarratives(createInitialEmotionalNarrativeState());
+    const defaultCareerWorld = createInitialCareerWorld(DEFAULT_CLUB_PROFILE, defaultPlayers);
+    const defaultYouthIntake = ensureSeasonalYouthIntake(
+      defaultPlayers,
+      defaultCareerWorld.youthAcademyState,
+      DEFAULT_CLUB_PROFILE,
+      defaultCareerWorld.clubFacilitiesState,
+      defaultCareerWorld.clubStaffState,
+      CURRENT_SEASON,
+      defaultDNA
+    );
+    setPlayers(defaultYouthIntake.players);
+    setCareerWorld({ ...defaultCareerWorld, youthAcademyState: defaultYouthIntake.state });
+    setPlayerConversations(createInitialPlayerConversationState());
+    setLeagueSystem(createInitialLeagueSystem(DEFAULT_CLUB_PROFILE.id));
   };
 
   const handleUpdatePlayer = (updated: Player) => {
     setPlayers(players.map(p => p.id === updated.id ? updated : p));
+  };
+
+  const handleCreatePlayingTimePromise = (playerId: string, targetMinutes: number) => {
+    setPlayers(current => current.map(player => {
+      if (player.id !== playerId) return player;
+      if (player.playingTimePromise && (player.playingTimePromise.status === 'active' || player.playingTimePromise.status === 'at_risk')) return player;
+      const existingStat = playerStats.find(stat => stat.playerId === playerId);
+      return {
+        ...player,
+        playingTimePromise: createPlayingTimePromise(playerId, targetMinutes, existingStat?.minutesPlayed ?? 0, CURRENT_SEASON)
+      };
+    }));
   };
 
   const handleSaveTactic = (newTactic: Tactic) => {
@@ -598,6 +750,87 @@ export default function App() {
     resolution.news.forEach(item => handleAddNewNews(item.title, item.content, item.category));
   };
 
+  const handleResolvePressConference = (optionId: string) => {
+    setCareerWorld(current => resolvePressConference(current, optionId));
+  };
+
+  const handleHireClubStaff = (role: ClubStaffRole, candidateId: string) => {
+    if (!canHireClubStaff(careerWorld.clubStaffState, currentRound)) return;
+    const candidate = careerWorld.clubStaffState.candidatePool.find(item => item.id === candidateId && item.role === role);
+    if (!candidate || candidate.seasonalCost > budget) return;
+
+    const nextClubStaffState = hireClubStaffMember(careerWorld.clubStaffState, activeClub, role, candidateId, currentRound, CURRENT_SEASON);
+    if (nextClubStaffState === careerWorld.clubStaffState) return;
+
+    setCareerWorld(current => ({ ...current, clubStaffState: nextClubStaffState }));
+    setBudget(Math.max(0, budget - candidate.seasonalCost));
+  };
+
+  const handleUpgradeFacility = (type: FacilityType) => {
+    if (!canStartFacilityUpgrade(careerWorld.clubFacilitiesState, type)) return;
+    const facility = careerWorld.clubFacilitiesState.facilities.find(f => f.type === type);
+    if (!facility) return;
+    const cost = getFacilityUpgradeCost(activeClub, facility.level + 1);
+    if (cost > budget) return;
+
+    const nextClubFacilitiesState = startFacilityUpgrade(careerWorld.clubFacilitiesState, activeClub, type, currentRound);
+    if (nextClubFacilitiesState === careerWorld.clubFacilitiesState) return;
+
+    setCareerWorld(current => ({ ...current, clubFacilitiesState: nextClubFacilitiesState }));
+    setBudget(Math.max(0, budget - cost));
+  };
+
+  // Fase 9: promozione esplicita dal vivaio. Nessun costo di cartellino, contratto giovanile minimo
+  // creato una sola volta; blocca solo se il budget stipendi non regge nemmeno il minimo previsto.
+  const handlePromoteYouthPlayer = (player: Player) => {
+    const wageBudget = calculateClubWageBudget(players, activeClub, careerWorld.clubWageBudgetState.season, careerWorld.clubWageBudgetState);
+    const result = promoteYouthPlayer(player, activeClub, wageBudget, careerWorld.clubWageBudgetState.season, currentRound);
+    if (!result.success || !result.player) {
+      alert(result.reason ?? 'Promozione non possibile al momento.');
+      return;
+    }
+
+    const promoted = result.player;
+    setPlayers(players.map(p => (p.id === promoted.id ? promoted : p)));
+    setCareerWorld(current => ({
+      ...current,
+      youthAcademyState: {
+        ...current.youthAcademyState,
+        playerIds: current.youthAcademyState.playerIds.filter(id => id !== promoted.id),
+        historicalGraduateIds: [promoted.id, ...current.youthAcademyState.historicalGraduateIds].slice(0, 20)
+      }
+    }));
+
+    const isNoteworthy = promoted.youthProfile?.academyStatus === 'promoted' && (
+      (promoted.potential - promoted.overall >= 12) || promoted.youthProfile.localConnection === 'local'
+    );
+    if (isNoteworthy) {
+      handleAddClubMemory({
+        season: careerWorld.clubWageBudgetState.season,
+        category: 'youth',
+        title: `Dal vivaio alla prima squadra: ${promoted.name}`,
+        description: `${promoted.name} viene promosso in prima squadra dopo il percorso nel settore giovanile del ${activeClub.name}.`,
+        importance: 62,
+        fanImpact: 4,
+        dressingRoomImpact: 1,
+        tags: ['vivaio', 'promozione', `player:${promoted.name}`],
+        playerNames: [promoted.name]
+      });
+    }
+  };
+
+  const handleReleaseYouthPlayer = (player: Player) => {
+    const released = releaseYouthPlayer(player, careerWorld.clubWageBudgetState.season);
+    setPlayers(players.map(p => (p.id === released.id ? released : p)));
+    setCareerWorld(current => ({
+      ...current,
+      youthAcademyState: {
+        ...current.youthAcademyState,
+        playerIds: current.youthAcademyState.playerIds.filter(id => id !== released.id)
+      }
+    }));
+  };
+
   const handleTransferDNAEvent = (player: Player, type: 'buy' | 'sell', fee: number) => {
     setTeamDNA(current => evolveTeamDNAFromTransfer(current, player, type, fee));
   };
@@ -606,7 +839,7 @@ export default function App() {
     if (clubName === activeClub.name) return;
 
     const alreadyTracked = scoutedTargets.some(target => (
-      target.status === 'pending'
+      target.status === 'draft'
       && target.playerName === player.name
       && target.currentClub === clubName
     ));
@@ -635,7 +868,7 @@ export default function App() {
         offeredWage: 0,
         offeredContractYears: 0,
         probability: Math.max(8, Math.min(88, probability + dnaMarket.probabilityBonus)),
-        status: 'pending',
+        status: 'draft',
         timeline: [
           `${player.name} osservato nella rosa del ${clubName}.`,
           `DNA club: ${dnaMarket.note}`,
@@ -651,7 +884,7 @@ export default function App() {
   if (!selectedClub) {
     return (
       <TeamSelection
-        clubs={CLUB_PROFILES}
+        clubs={[...CLUB_PROFILES, ...SERIE_B_CLUBS]}
         managerName={MANAGER_NAME}
         onSelect={handleStartCareer}
       />
@@ -663,6 +896,9 @@ export default function App() {
     ? Number(nextMatch.id.split('_')[1]) || 1
     : 1;
   const activeDecisionCount = (seasonNarrative.arcs ?? []).filter(isDecisionWorthyArc).length;
+  // Fase 9: i prospetti del vivaio non devono comparire in Tactics (ne' come titolari ne' in rosa
+  // selezionabile). Assente = 'first_team', default sicuro per vecchi salvataggi.
+  const firstTeamPlayers = players.filter(p => (p.squadStatus ?? 'first_team') === 'first_team');
 
   return (
     <div className="app-container">
@@ -685,6 +921,9 @@ export default function App() {
           news={news}
           markNewsAsRead={handleMarkNewsAsRead}
           activeDecisionCount={activeDecisionCount}
+          careerStorageKeys={CAREER_STORAGE_KEYS}
+          appDataVersion={DATA_VERSION}
+          clubName={activeClub.name}
         />
 
         {/* Dynamic Page Views */}
@@ -707,6 +946,7 @@ export default function App() {
                 clubProfile={activeClub}
                 onNavigate={setCurrentTab}
                 clubWorld={clubWorld}
+                scoutedTargets={scoutedTargets}
                 onCreateTransferTarget={handleCreateTransferTarget}
                 seasonNarrative={seasonNarrative}
                 clubHistory={clubHistory}
@@ -715,6 +955,17 @@ export default function App() {
                 tactic={tactic}
                 teamDNA={teamDNA}
                 starters={starters}
+                emotionalNarratives={emotionalNarratives}
+                careerWorld={careerWorld}
+                playerStats={playerStats}
+                currentRound={currentRound}
+                playerConversations={playerConversations}
+                onResolvePressConference={handleResolvePressConference}
+                leagueSystem={leagueSystem}
+                onHireClubStaff={handleHireClubStaff}
+                onUpgradeFacility={handleUpgradeFacility}
+                onPromoteYouthPlayer={handlePromoteYouthPlayer}
+                onReleaseYouthPlayer={handleReleaseYouthPlayer}
               />
             )}
 
@@ -730,12 +981,25 @@ export default function App() {
                 playerStats={playerStats}
                 clubHistory={clubHistory}
                 currentRound={currentRound}
+                playerPublicProfiles={emotionalNarratives.playerProfiles}
+                onCreatePlayingTimePromise={handleCreatePlayingTimePromise}
+                playerConversations={playerConversations}
+                setPlayerConversations={setPlayerConversations}
+                clubStaffState={careerWorld.clubStaffState}
+                clubProfile={activeClub}
+                careerWorld={careerWorld}
+                setCareerWorld={setCareerWorld}
+                budget={budget}
+                setBudget={setBudget}
+                teamName={activeClub.name}
+                onPromoteYouthPlayer={handlePromoteYouthPlayer}
+                onReleaseYouthPlayer={handleReleaseYouthPlayer}
               />
             )}
 
             {currentTab === 'tactics' && tactic && (
               <Tactics
-                players={players}
+                players={firstTeamPlayers}
                 tactic={tactic}
                 saveTactic={handleSaveTactic}
                 starters={starters}
@@ -748,6 +1012,7 @@ export default function App() {
 
             {currentTab === 'market' && (
               <Market
+                clubProfile={activeClub}
                 scoutedTargets={scoutedTargets}
                 setScoutedTargets={setScoutedTargets}
                 budget={budget}
@@ -769,7 +1034,11 @@ export default function App() {
                 setIncomingOffers={setIncomingOffers}
                 playerStats={playerStats}
                 clubHistory={clubHistory}
+                setClubHistory={setClubHistory}
                 currentRound={currentRound}
+                careerWorld={careerWorld}
+                setCareerWorld={setCareerWorld}
+                tactic={tactic}
               />
             )}
 
@@ -783,6 +1052,7 @@ export default function App() {
                 playerStats={playerStats}
                 onCreateTransferTarget={handleCreateTransferTarget}
                 onNavigate={setCurrentTab}
+                leagueSystem={leagueSystem}
               />
             )}
 
@@ -795,6 +1065,8 @@ export default function App() {
                 teamDNA={teamDNA}
                 seasonNarrative={seasonNarrative}
                 standings={standings}
+                emotionalNarratives={emotionalNarratives}
+                leagueSystem={leagueSystem}
               />
             )}
 
@@ -829,6 +1101,19 @@ export default function App() {
                 seasonNarrative={seasonNarrative}
                 setSeasonNarrative={setSeasonNarrative}
                 clubHistory={clubHistory}
+                setClubHistory={setClubHistory}
+                emotionalNarratives={emotionalNarratives}
+                setEmotionalNarratives={setEmotionalNarratives}
+                careerWorld={careerWorld}
+                setCareerWorld={setCareerWorld}
+                playerConversations={playerConversations}
+                setPlayerConversations={setPlayerConversations}
+                leagueSystem={leagueSystem}
+                setLeagueSystem={setLeagueSystem}
+                scoutedTargets={scoutedTargets}
+                setScoutedTargets={setScoutedTargets}
+                incomingOffers={incomingOffers}
+                setIncomingOffers={setIncomingOffers}
               />
             )}
           </motion.div>

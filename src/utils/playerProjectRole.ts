@@ -65,6 +65,9 @@ const buildReasons = (
   if (player.careerMemory.benchComplaints >= 2) reasons.push('ha gia accumulato malumore da panchina');
   if (trust >= 72) reasons.push('si sente parte del progetto');
   if (tension >= 70) reasons.push('la sua situazione puo diventare un caso');
+  if (player.playingTimePromise?.status === 'completed') reasons.push('ha raggiunto il minutaggio promesso dal mister');
+  if (player.playingTimePromise?.status === 'broken') reasons.push('la promessa di minutaggio non e stata rispettata');
+  if (player.playingTimePromise?.status === 'at_risk') reasons.push('rischia di non raggiungere il minutaggio promesso');
 
   return reasons.slice(0, 6);
 };
@@ -89,6 +92,12 @@ export const getPlayerProjectRole = (
       promise.active.promise.toLowerCase().includes('giovane') || promise.active.promise.toLowerCase().includes('progetto') ? 12 :
       promise.active.promise.toLowerCase().includes('rotazione') ? 8 : 6
     : 0;
+  const ptPromise = player.playingTimePromise;
+  const ptPromiseCompleted = ptPromise?.status === 'completed';
+  const ptPromiseBroken = ptPromise?.status === 'broken';
+  const ptPromiseAtRisk = ptPromise?.status === 'at_risk';
+  const isAmbitiousOrEgo = player.personality.ambition >= 70 || player.personality.ego >= 70;
+
   const trust = clampPercent(
     34
     + minutesShare * 24
@@ -98,6 +107,9 @@ export const getPlayerProjectRole = (
     + (promise.kept ? 12 : 0)
     - (promise.broken ? 22 : 0)
     - (player.status === 'Cedibile' ? 18 : 0)
+    + (ptPromiseCompleted ? 10 : 0)
+    - (ptPromiseAtRisk ? 6 : 0)
+    - (ptPromiseBroken ? 16 : 0)
   );
   const expectedMinutes = clamp((player.overall - 72) * 4.2 + ambitionPressure * 0.42 + promisedImportance - acceptance * 0.22, 0, 100);
   const actualRole = clamp(minutesShare * 70 + (isStarter ? 25 : isBench ? 12 : 0), 0, 100);
@@ -109,6 +121,9 @@ export const getPlayerProjectRole = (
     + (promise.broken ? 28 : 0)
     + (player.status === 'Cedibile' ? 18 : 0)
     - (player.personality.professionalism >= 78 ? 5 : 0)
+    + (ptPromiseBroken ? 22 : 0)
+    + (ptPromiseAtRisk ? 10 : 0)
+    - (ptPromiseCompleted ? 6 : 0)
   );
 
   const candidates: RoleCandidate[] = [
@@ -211,6 +226,46 @@ export const getPlayerProjectRole = (
       growthModifier: 0.05,
       dressingRoomWeight: 2,
       fanWeight: 1
+    },
+    {
+      key: 'frustratedTalent',
+      label: 'Talento frustrato',
+      score: (ptPromiseBroken ? 58 : 0) + (ptPromiseBroken && isAmbitiousOrEgo ? 26 : 0) + tension * 0.32 + Math.max(0, player.potential - player.overall) * 1.4,
+      summary: `${player.name} sente che la promessa di minutaggio ricevuta non e stata rispettata.`,
+      expectation: 'Serve un chiarimento concreto sul suo spazio, o il rapporto rischia di logorarsi.',
+      growthModifier: -0.14,
+      dressingRoomWeight: -3,
+      fanWeight: -1
+    },
+    {
+      key: 'steadyStarter',
+      label: 'Titolare',
+      score: (isStarter ? 46 : 0) + trust * 0.34 - Math.max(0, tension - 45) * 0.5 + minutesShare * 14,
+      summary: `${player.name} e un punto fermo dell'undici titolare, senza tensioni aperte.`,
+      expectation: 'Continuita e prestazioni solide mantengono il suo status.',
+      growthModifier: 0.03,
+      dressingRoomWeight: 2,
+      fanWeight: 2
+    },
+    {
+      key: 'keyRotation',
+      label: 'Rotazione importante',
+      score: (isBench ? 30 : 12) + minutesShare * 46 + (ptPromise?.status === 'active' ? 3 : 0) + acceptance * 0.15,
+      summary: `${player.name} non parte sempre titolare ma incide con continuita nelle rotazioni.`,
+      expectation: 'Il minutaggio va gestito con equilibrio per non perderlo.',
+      growthModifier: 0.04,
+      dressingRoomWeight: 2,
+      fanWeight: 1
+    },
+    {
+      key: 'benchPlayer',
+      label: 'Riserva',
+      score: (isBench ? 26 : 0) + Math.max(0, 40 - minutesShare * 60) + acceptance * 0.1,
+      summary: `${player.name} resta un'alternativa dalla panchina, senza grandi tensioni aperte.`,
+      expectation: 'Serve continuare a lavorare per guadagnarsi piu spazio.',
+      growthModifier: 0,
+      dressingRoomWeight: 1,
+      fanWeight: 0
     }
   ];
 
@@ -232,7 +287,7 @@ export const getPlayerProjectRole = (
 };
 
 export const getProjectRoleColor = (role: PlayerProjectRole) => {
-  if (role.tension >= 72 || role.key === 'brokenPromise' || role.key === 'surplus') return 'var(--color-danger)';
+  if (role.tension >= 72 || role.key === 'brokenPromise' || role.key === 'surplus' || role.key === 'frustratedTalent') return 'var(--color-danger)';
   if (role.key === 'untouchableStar' || role.key === 'fanSymbol' || role.key === 'futureCaptain') return 'var(--color-gold)';
   if (role.trust >= 66) return 'var(--color-pitch)';
   return 'var(--text-secondary)';

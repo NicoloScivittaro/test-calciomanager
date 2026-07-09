@@ -1,20 +1,57 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Play, Trophy, Users, BarChart2, Award, Gauge, Shuffle, SlidersHorizontal, Save } from 'lucide-react';
-import { ClubAIState, ClubHistoryState, ClubMemoryDraft, ClubProfile, Player, Match, Standing, MatchEvent, MatchStats, Tactic, TeamDNAState, RivalTacticalMemory, SeasonNarrativeState, PlayerSeasonStat } from '../../types';
+import { ClubAIState, ClubHistoryState, ClubMemoryDraft, ClubProfile, Player, Match, Standing, MatchEvent, MatchStats, Tactic, TeamDNAState, RivalTacticalMemory, SeasonNarrativeState, PlayerSeasonStat, EmotionalNarrativeState, CareerWorldState, PlayerConversationState, LeagueSystemState, CompetitionId, Negotiation, IncomingTransferOffer } from '../../types';
 import { calculateInitialStandings, createPlayersForClub, DEFAULT_CLUB_PROFILE, generateCalendar, getClubByName, rankStandings } from '../../data/serieAData';
-import { getClubCompetitiveRating, runClubAutonomyRound } from '../../utils/clubAI';
-import { buildMatchMemories } from '../../utils/clubHistory';
+import { getClubCompetitiveRating, runClubAutonomyRound, createInitialClubWorld } from '../../utils/clubAI';
+import {
+  advancePostseasonForCpu,
+  advanceSerieBPlayoffFinal,
+  advanceSerieBPlayoffStage,
+  advanceLeagueSystemToNextSeason,
+  applyUserResultToFixtures,
+  buildSerieBPlayoffBracket,
+  buildSerieBPlayoutBracket,
+  computeStandingsFromFixtures,
+  COMPETITION_DEFINITIONS,
+  createInitialSerieBClubWorld,
+  deriveClubMatchCalendar,
+  determineRegularSeasonOutcome,
+  finalizePostseason,
+  getAnyClubByName,
+  getAnyClubById,
+  getSeasonStartYear,
+  OBJECTIVE_LABELS,
+  SERIE_B_PROMOTION_RULES,
+  simulateCompetitionRound
+} from '../../utils/leagueSystem';
+import { applyRivalryMatchResult, buildExPlayerReturnMemory, buildMatchMemories, CURRENT_SEASON, isFormerClubPlayer } from '../../utils/clubHistory';
+import { MarketRumorPlayerSignal, processMarketRumorsAfterMatch, processMarketRumorsAfterTransfer, processMediaAfterMatch } from '../../utils/mediaEngine';
+import { processMatchForEmotionalNarratives } from '../../utils/emotionalNarratives';
+import { CareerWorldPlayerContribution, computeMatchImportance, isAcademyOrLocalPlayer, processCareerWorldAfterMatch, regenerateObjectivesForDivisionChange } from '../../utils/careerWorld';
+import { resolvePlayingTimePromises } from '../../utils/playerPromises';
+import { getPlayerProjectRole } from '../../utils/playerProjectRole';
+import { detectPostMatchConversationTriggers } from '../../utils/playerDialogue';
 import { evaluateLineupFitness, resolvePostMatchFitness } from '../../utils/playerFitness';
+import { advancePlayerDevelopmentCycle } from '../../utils/playerDevelopment';
 import { evaluateLineupPersonalities, resolvePostMatchPersonalities } from '../../utils/playerPersonality';
+import { advanceClubStaffReports, buildClubStaff, getClubStaffModifiers } from '../../utils/staff';
+import { advanceClubFacilities, applyFacilityBonusToStaffModifiers, getFacilityStaffBonus } from '../../utils/facilities';
+import { calculateClubWageBudget, processContractBonusesAfterMatch, processContractSeasonTransition } from '../../utils/playerContracts';
+import { ensureSeasonalYouthIntake, runYouthAcademyReview } from '../../utils/youthAcademy';
+import { checkLoanAppearanceObligation, resolveLoanAtSeasonEnd, expireClausesForSeason, processFutureContractAgreementsAtSeasonEnd, expireProtectiveClausesForSeason, returnLoanSwapPlayersHome, createSeasonTransferWindows, refreshTransferWindowsStatus, processNegotiationDeadlines, processIncomingOfferDeadlines, getActiveTransferWindow, isTransferWindowOpen, isCompetitionEligibleNegotiation, ensurePlayerAgentProfile, processTransferCompetitionTick } from '../../utils/transferDeals';
+import { processOutgoingMarketTick } from '../../utils/outgoingMarket';
 import { advanceRivalMemoriesSeason, evaluateRivalAdaptation, evolveRivalAfterMatch, getRivalMemoryForClub, upsertRivalMemory } from '../../utils/rivalAI';
-import { advanceSeasonNarrative, startNextSeasonNarrative } from '../../utils/seasonNarrative';
-import { applyMatchToPlayerSeasonStats } from '../../utils/playerSeasonStats';
+import { advanceSeasonNarrative, startNextSeasonNarrative, getSeasonLabel } from '../../utils/seasonNarrative';
+import { applyMatchToPlayerSeasonStats, applySimulatedRoundToPlayerSeasonStats } from '../../utils/playerSeasonStats';
 import { evaluateTeamDNAForMatch, evolveTeamDNAAfterMatch, evolveTeamDNAEndOfSeason, TEAM_DNA_DEFINITIONS } from '../../utils/teamDNA';
 import { buildLineup, evaluateTactic, POSITION_PRESETS, TacticalEvaluation } from '../../utils/tacticsEngine';
 import TeamLogo from '../common/TeamLogo';
 import ClubInfoModal from '../common/ClubInfoModal';
 import PlayerProfileModal from '../common/PlayerProfileModal';
+import PitchRenderer, { PitchOverlayState } from './PitchRenderer';
+import MatchPlaybackControls, { ReplaySpeed } from './MatchPlaybackControls';
+import { buildMatchReplay, buildTimelineMarkers, getReplayPhaseLabel, interpolateReplayFrame } from '../../utils/matchReplayEngine';
 
 interface MatchCenterProps {
   players: Player[];
@@ -46,6 +83,19 @@ interface MatchCenterProps {
   seasonNarrative: SeasonNarrativeState;
   setSeasonNarrative: React.Dispatch<React.SetStateAction<SeasonNarrativeState>>;
   clubHistory: ClubHistoryState;
+  setClubHistory: React.Dispatch<React.SetStateAction<ClubHistoryState>>;
+  emotionalNarratives: EmotionalNarrativeState;
+  setEmotionalNarratives: React.Dispatch<React.SetStateAction<EmotionalNarrativeState>>;
+  careerWorld: CareerWorldState;
+  setCareerWorld: React.Dispatch<React.SetStateAction<CareerWorldState>>;
+  playerConversations: PlayerConversationState;
+  setPlayerConversations: React.Dispatch<React.SetStateAction<PlayerConversationState>>;
+  leagueSystem: LeagueSystemState | null;
+  setLeagueSystem: React.Dispatch<React.SetStateAction<LeagueSystemState | null>>;
+  scoutedTargets: Negotiation[];
+  setScoutedTargets: (targets: Negotiation[]) => void;
+  incomingOffers: IncomingTransferOffer[];
+  setIncomingOffers: (offers: IncomingTransferOffer[]) => void;
 }
 
 type SimSpeed = 1 | 2 | 4 | 8;
@@ -435,6 +485,12 @@ interface LiveTacticalBoardProps {
   opponentName: string;
   opponentModule: Tactic['module'];
   gameState: 'playing' | 'finished';
+  matchId: string;
+  events: MatchEvent[];
+  userBench: Player[];
+  opponentBench: Player[];
+  userColors: { primary: string; secondary: string };
+  opponentColors: { primary: string; secondary: string };
 }
 
 function LiveTacticalBoard({
@@ -448,8 +504,86 @@ function LiveTacticalBoard({
   teamName,
   opponentName,
   opponentModule,
-  gameState
+  gameState,
+  matchId,
+  events,
+  userBench,
+  opponentBench,
+  userColors,
+  opponentColors
 }: LiveTacticalBoardProps) {
+  const userSquad = useMemo(() => [...lineup, ...userBench], [lineup, userBench]);
+  const opponentSquad = useMemo(() => [...opponentLineup, ...opponentBench], [opponentLineup, opponentBench]);
+  const matchReplay = useMemo(
+    () => buildMatchReplay({
+      matchId,
+      tactic,
+      opponentModule,
+      userLineup: lineup,
+      opponentLineup,
+      userSquad,
+      opponentSquad,
+      events,
+      durationMinutes: Math.max(minute, 1)
+    }),
+    [matchId, tactic, opponentModule, lineup, opponentLineup, userSquad, opponentSquad, events, minute]
+  );
+  const [playback, setPlayback] = useState<{ currentSecond: number; playing: boolean; speed: ReplaySpeed }>(
+    { currentSecond: 0, playing: true, speed: 0.75 }
+  );
+  const [overlays, setOverlays] = useState<PitchOverlayState>({
+    passes: true,
+    pressing: true,
+    defensiveLine: true,
+    width: false,
+    depth: false,
+    names: false
+  });
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+
+  const interpolatedFrame = useMemo(
+    () => interpolateReplayFrame(matchReplay.frames, playback.currentSecond),
+    [matchReplay, playback.currentSecond]
+  );
+  const timelineMarkers = useMemo(() => buildTimelineMarkers(matchId, events, matchReplay), [matchId, events, matchReplay]);
+
+  // Stato autoritativo della partita reale (MatchCenter): il replay non deve mai vivere oltre di esso.
+  const isMatchFinished = gameState === 'finished';
+  const isAuthoritativeMatchRunning = gameState === 'playing';
+
+  // Al fischio finale: ferma per sempre l'orologio del replay e blocca palla/giocatori sull'ultimo frame
+  // coerente. Gira una sola volta per partita (gameState/duration non cambiano piu' dopo il fischio finale),
+  // quindi non impedisce un restart/play manuale successivo dell'utente.
+  useEffect(() => {
+    if (!isMatchFinished) return;
+    setPlayback(prev => (
+      prev.playing || prev.currentSecond < matchReplay.durationSeconds
+        ? { ...prev, playing: false, currentSecond: matchReplay.durationSeconds }
+        : prev
+    ));
+  }, [isMatchFinished, matchReplay.durationSeconds]);
+
+  const handleTick = useCallback((nextSecond: number) => setPlayback(prev => ({ ...prev, currentSecond: nextSecond })), []);
+  const handleTogglePlay = useCallback(() => setPlayback(prev => ({ ...prev, playing: !prev.playing })), []);
+  const handleSpeedChange = useCallback((speed: ReplaySpeed) => setPlayback(prev => ({ ...prev, speed })), []);
+  const handleSeek = useCallback(
+    (seconds: number) => setPlayback(prev => ({ ...prev, currentSecond: clamp(seconds, 0, matchReplay.durationSeconds) })),
+    [matchReplay.durationSeconds]
+  );
+  const handleRestart = useCallback(() => setPlayback(prev => ({ ...prev, currentSecond: 0 })), []);
+  const toggleOverlay = useCallback((key: keyof PitchOverlayState) => (
+    setOverlays(prev => ({ ...prev, [key]: !prev[key] }))
+  ), []);
+
+  const possessionLabel = interpolatedFrame?.possessionTeamId === 'user'
+    ? teamName
+    : interpolatedFrame?.possessionTeamId === 'opponent'
+      ? opponentName
+      : 'Fase equilibrata';
+  const phaseLabel = isMatchFinished && playback.currentSecond >= matchReplay.durationSeconds - 0.05
+    ? 'Finale'
+    : interpolatedFrame ? getReplayPhaseLabel(interpolatedFrame.phase) : 'In attesa';
+
   const frame = useMemo(
     () => buildActionFrame(minute, stats, tactic, report, matchEdge),
     [matchEdge, minute, report, stats, tactic]
@@ -521,6 +655,87 @@ function LiveTacticalBoard({
 
   const sequencePath = frame.sequence.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
 
+  const gk = lineup.find(player => player.role === 'GK');
+  const deepBuilder = tactic.buildUp === 'Manovrata'
+    ? lineup.find(player => player.role === 'CB')
+    : lineup.find(player => player.role === 'DM') ?? lineup.find(player => player.role === 'CM');
+  const wideOutlet = frame.lane === 'Sinistra'
+    ? lineup.find(player => player.role === 'LB') ?? lineup.find(player => player.role === 'LW')
+    : frame.lane === 'Destra'
+      ? lineup.find(player => player.role === 'RB') ?? lineup.find(player => player.role === 'RW')
+      : lineup.find(player => player.role === 'CM') ?? lineup.find(player => player.role === 'AM');
+  const finisher =
+    tactic.chanceCreation === 'Cross' ? lineup.find(player => player.role === 'ST') :
+    tactic.chanceCreation === 'Tagli Interni' ? (frame.lane === 'Sinistra' ? lineup.find(player => player.role === 'LW') : lineup.find(player => player.role === 'RW')) ?? lineup.find(player => player.role === 'AM') :
+    tactic.chanceCreation === 'Tiri da Fuori' ? lineup.find(player => player.role === 'AM') ?? lineup.find(player => player.role === 'CM') :
+    lineup.find(player => player.role === 'AM') ?? lineup.find(player => player.role === 'ST');
+  const presser = tactic.pressing > 72
+    ? lineup.find(player => ['ST', 'LW', 'RW'].includes(player.role))
+    : lineup.find(player => ['CB', 'DM'].includes(player.role));
+  const coverDefender = lineup.find(player => player.role === 'CB');
+  const opponentCarrier = opponentLineup.find(player => ['AM', 'CM', 'ST', 'LW', 'RW'].includes(player.role)) ?? opponentLineup[0];
+
+  const narratedSteps = frame.teamHasBall ? [
+    {
+      label: '1. Uscita',
+      text: tactic.buildUp === 'Manovrata'
+        ? `${gk?.name ?? 'Il portiere'} appoggia corto, ${deepBuilder?.name ?? 'un difensore'} imposta con calma.`
+        : tactic.buildUp === 'Lancio Lungo'
+          ? `${gk?.name ?? 'Il portiere'} lancia lungo, si salta la costruzione.`
+          : `${deepBuilder?.name ?? 'Un centrocampista'} scende a prendere palla e detta il ritmo.`
+    },
+    {
+      label: '2. Sviluppo',
+      text: frame.lane === 'Centro'
+        ? `${wideOutlet?.name ?? 'La squadra'} cerca profondita per vie centrali.`
+        : `${wideOutlet?.name ?? 'Un esterno'} avanza sulla fascia ${frame.lane.toLowerCase()}.`
+    },
+    {
+      label: '3. Obiettivo',
+      text:
+        tactic.chanceCreation === 'Cross' ? `Cross previsto per ${finisher?.name ?? 'la punta'}.` :
+        tactic.chanceCreation === 'Tagli Interni' ? `${finisher?.name ?? 'Un esterno'} punta il taglio interno.` :
+        tactic.chanceCreation === 'Tiri da Fuori' ? `${finisher?.name ?? 'Un centrocampista'} prepara il tiro dal limite.` :
+        `Si cerca il filtrante per ${finisher?.name ?? 'la punta'}.`
+    }
+  ] : [
+    {
+      label: '1. Non possesso',
+      text: tactic.pressing > 72
+        ? `${presser?.name ?? 'La squadra'} pressa ${opponentCarrier?.name ?? 'il portatore avversario'}.`
+        : tactic.defensiveLine < 45
+          ? `${presser?.name ?? 'La difesa'} resta bassa e compatta.`
+          : `${presser?.name ?? 'La squadra'} mantiene ordine e distanze.`
+    },
+    {
+      label: '2. Distanze',
+      text: tactic.width >= 68 ? 'I reparti restano larghi per coprire il campo.' : tactic.width <= 38 ? 'I reparti si stringono per non lasciare spazi centrali.' : 'Le distanze tra reparti sono equilibrate.'
+    },
+    {
+      label: '3. Rischio',
+      text: report.opponentRisk > 66
+        ? `${coverDefender?.name ?? 'La difesa'} rischia di lasciare spazio alle spalle.`
+        : `${coverDefender?.name ?? 'La difesa'} copre la profondita senza affanni.`
+    }
+  ];
+
+  const phaseCategory = frame.teamHasBall
+    ? (frame.phase.includes('Uscita') || frame.phase.includes('Regista') || frame.phase.includes('Lancio') || frame.phase.includes('Costruzione'))
+      ? 'buildup'
+      : (frame.phase.includes('Sviluppo') || frame.phase.includes('Rifinitura'))
+        ? 'development'
+        : (frame.phase.includes('Transizione') || frame.phase.includes('Riciclo'))
+          ? 'transition'
+          : 'finishing'
+    : 'defensive';
+
+  const nowSentence =
+    phaseCategory === 'buildup' ? `${deepBuilder?.name ?? gk?.name ?? 'La squadra'} fa ripartire l azione dal basso.` :
+    phaseCategory === 'development' ? `${wideOutlet?.name ?? 'Un giocatore'} porta palla avanti, si cerca spazio ${frame.lane === 'Centro' ? 'al centro' : `sulla fascia ${frame.lane.toLowerCase()}`}.` :
+    phaseCategory === 'finishing' ? `${finisher?.name ?? 'La squadra'} rifinisce l azione verso la porta.` :
+    phaseCategory === 'transition' ? `${wideOutlet?.name ?? finisher?.name ?? 'La squadra'} riparte veloce in transizione.` :
+    `${presser?.name ?? 'La squadra'} si oppone a ${opponentCarrier?.name ?? opponentName}.`;
+
   return (
     <div className="card-premium live-tactical-card">
       <div className="live-tactical-header">
@@ -535,7 +750,7 @@ function LiveTacticalBoard({
       </div>
 
       <div className="live-action-steps">
-        {frame.steps.map(step => (
+        {narratedSteps.map(step => (
           <div key={step.label}>
             <span>{step.label}</span>
             <strong>{step.text}</strong>
@@ -543,89 +758,55 @@ function LiveTacticalBoard({
         ))}
       </div>
 
-      <div className="live-pitch-visual" aria-label="Movimenti tattici live">
-        <div className="live-pitch-grass" />
-        <div className="live-pitch-direction top">Porta avversaria</div>
-        <div className="live-pitch-direction bottom">La tua porta</div>
-        <div className={`live-possession-pill ${frame.teamHasBall ? 'user' : 'opponent'}`}>
-          {frame.teamHasBall ? `${teamName} in possesso` : `${opponentName} in possesso`}
-        </div>
-        <div className="live-phase-ribbon" style={{ borderColor: frame.color }}>
-          <span>Adesso</span>
-          <strong>{frame.phase}</strong>
-        </div>
-        <div className="live-action-zone" style={{
-          left: `${clamp(frame.ball.x - 13, 4, 70)}%`,
-          top: `${clamp(frame.ball.y - 10, 4, 76)}%`,
-          borderColor: frame.color,
-          background: frame.teamHasBall ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)'
-        }} />
-
-        <svg className="live-pitch-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-          <defs>
-            <marker id="live-arrow-green" markerWidth="4" markerHeight="4" refX="3.5" refY="2" orient="auto">
-              <path d="M0,0 L4,2 L0,4 Z" fill="#34D399" />
-            </marker>
-          </defs>
-          <line x1="5" y1={frame.defensiveLineY} x2="95" y2={frame.defensiveLineY} className="live-line-defense" />
-          <line x1="5" y1={frame.pressingLineY} x2="95" y2={frame.pressingLineY} className="live-line-press" />
-          {playerMarkers.filter(marker => marker.active).map(({ player, slot, target }) => (
-            <line
-              key={`run-${player.id}`}
-              x1={slot.x}
-              y1={slot.y}
-              x2={target.x}
-              y2={target.y}
-              className="live-player-run"
-            />
-          ))}
-          <motion.path
-            key={`${frame.phase}-${frame.lane}-${minute}`}
-            d={sequencePath}
-            className="live-ball-path"
-            markerEnd="url(#live-arrow-green)"
-            initial={{ pathLength: 0, opacity: 0.3 }}
-            animate={{ pathLength: 1, opacity: 1 }}
-            transition={{ duration: 0.75 }}
-          />
-        </svg>
-
-        <span className="live-line-label defense" style={{ top: `${frame.defensiveLineY}%` }}>Linea difensiva</span>
-        <span className="live-line-label press" style={{ top: `${frame.pressingLineY}%` }}>Pressing</span>
-
-        {opponentMarkers.map(({ player, target }) => (
-          <motion.div
-            key={`opp-${player.id}`}
-            className="live-opponent-dot"
-            animate={{ left: `${target.x}%`, top: `${target.y}%` }}
-            transition={{ duration: 0.45, ease: 'easeOut' }}
-            title={`${opponentName}: ${player.name}`}
-          >
-            {frame.teamHasBall ? 'press' : player.role}
-          </motion.div>
-        ))}
-
-        {playerMarkers.map(({ player, target, fit, active }) => {
-          const fitColor = fit?.score && fit.score < 0.65 ? 'var(--color-danger)' : fit?.score && fit.score < 0.92 ? 'var(--color-gold)' : 'var(--color-pitch)';
-          return (
-            <motion.div
-              key={player.id}
-              className={`live-player-marker ${active ? 'active' : 'inactive'}`}
-              animate={{ left: `${target.x}%`, top: `${target.y}%` }}
-              transition={{ duration: 0.45, ease: 'easeOut' }}
-              style={{ borderColor: fitColor, boxShadow: `0 0 14px ${fitColor}66` }}
-              title={`${player.name} - ${player.role}${fit ? ` in ${fit.slotRole}` : ''}`}
+      <div className="pitch-viewer-shell">
+        <div className="pitch-overlay-toggles" role="group" aria-label="Overlay tattici">
+          {([
+            ['passes', 'Passaggi'],
+            ['pressing', 'Pressing'],
+            ['defensiveLine', 'Linea difensiva'],
+            ['width', 'Ampiezza'],
+            ['depth', 'Profondita'],
+            ['names', 'Nomi giocatori']
+          ] as [keyof PitchOverlayState, string][]).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`pitch-overlay-toggle${overlays[key] ? ' active' : ''}`}
+              aria-pressed={overlays[key]}
+              onClick={() => toggleOverlay(key)}
             >
-              <span>{player.role}</span>
-              <small>{active ? playerShortName(player.name) : ''}</small>
-            </motion.div>
-          );
-        })}
+              {label}
+            </button>
+          ))}
+        </div>
 
-        <motion.div
-          className={`live-ball ${frame.teamHasBall ? 'user' : 'opponent'}`}
-          animate={{ left: `${frame.ball.x}%`, top: `${frame.ball.y}%` }}
-          transition={{ duration: 0.36, ease: 'easeOut' }}
+        <PitchRenderer
+          frame={interpolatedFrame}
+          teamA={{ primary: userColors.primary, secondary: userColors.secondary, label: teamName }}
+          teamB={{ primary: opponentColors.primary, secondary: opponentColors.secondary, label: opponentName }}
+          overlays={overlays}
+          selectedPlayerId={selectedPlayerId}
+          onSelectPlayer={setSelectedPlayerId}
+          authoritativeMatchStatus={gameState}
+          authoritativeMinute={minute}
+          isAuthoritativeMatchRunning={isAuthoritativeMatchRunning}
+          isAuthoritativePaused={false}
+          isMatchFinished={isMatchFinished}
+        />
+
+        <MatchPlaybackControls
+          currentSecond={playback.currentSecond}
+          durationSeconds={matchReplay.durationSeconds}
+          playing={playback.playing}
+          speed={playback.speed}
+          phaseLabel={phaseLabel}
+          possessionLabel={possessionLabel}
+          markers={timelineMarkers}
+          onTick={handleTick}
+          onTogglePlay={handleTogglePlay}
+          onSpeedChange={handleSpeedChange}
+          onSeekSeconds={handleSeek}
+          onRestart={handleRestart}
         />
       </div>
 
@@ -652,6 +833,14 @@ function LiveTacticalBoard({
         <span>Compattezza {compactness}%</span>
         <span>Modulo {tactic.module}</span>
         <span>Rivale {opponentModule}</span>
+      </div>
+
+      <div className="live-legend">
+        <span><i className="live-legend-swatch defense" />Linea difensiva</span>
+        <span><i className="live-legend-swatch press" />Linea di pressing</span>
+        <span><i className="live-legend-swatch fit-ok" />Ruolo adatto</span>
+        <span><i className="live-legend-swatch fit-bad" />Fuori ruolo</span>
+        <span><i className="live-legend-swatch opponent" />{opponentName}{frame.teamHasBall ? ' in pressing' : ' in possesso'}</span>
       </div>
     </div>
   );
@@ -686,7 +875,20 @@ export default function MatchCenter({
   setRivalMemories,
   seasonNarrative,
   setSeasonNarrative,
-  clubHistory
+  clubHistory,
+  setClubHistory,
+  emotionalNarratives,
+  setEmotionalNarratives,
+  careerWorld,
+  setCareerWorld,
+  playerConversations,
+  setPlayerConversations,
+  leagueSystem,
+  setLeagueSystem,
+  scoutedTargets,
+  setScoutedTargets,
+  incomingOffers,
+  setIncomingOffers
 }: MatchCenterProps) {
   const [gameState, setGameState] = useState<'preview' | 'playing' | 'finished'>('preview');
   const [minute, setMinute] = useState(0);
@@ -700,6 +902,7 @@ export default function MatchCenter({
   const [liveTactic, setLiveTactic] = useState<Tactic>(tactic);
   const [liveStarters, setLiveStarters] = useState<string[]>(starters);
   const [liveBench, setLiveBench] = useState<string[]>(bench);
+  const kickoffStartersRef = useRef<string[]>(starters);
   const [subOutId, setSubOutId] = useState('');
   const [subInId, setSubInId] = useState('');
   const [substitutions, setSubstitutions] = useState(0);
@@ -714,6 +917,7 @@ export default function MatchCenter({
   const [playerSheet, setPlayerSheet] = useState<{ player: Player; mode: 'quick' | 'full' } | null>(null);
   const simInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const goalFlashTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finishMatchInFlightRef = useRef(false);
 
   const nextMatch = calendar.find(m => m.status === 'next') || calendar[0];
   const userClub = getClubByName(teamName);
@@ -1250,6 +1454,13 @@ export default function MatchCenter({
   };
 
   const handleFinishMatch = () => {
+    // Guardia anti-doppio-click/anti-riesecuzione: l'intera pipeline di fine giornata/fine
+    // stagione (prestiti, obblighi, precontratti, contratti, budget) e' sincrona e non idempotente
+    // rispetto a una seconda chiamata sulla stessa closure di stato. Blocca qualunque riesecuzione
+    // finche' il componente non viene rimontato (onNavigate cambia schermata a fine funzione).
+    if (finishMatchInFlightRef.current) return;
+    finishMatchInFlightRef.current = true;
+
     const matchIndex = Number(nextMatch.id.split('_')[1]);
     const updatedCalendar = calendar.map(match => {
       if (match.id === nextMatch.id) {
@@ -1302,6 +1513,9 @@ export default function MatchCenter({
       .map(team => team.name)
       .filter(name => name !== teamName && name !== nextMatch.opponent);
 
+    const rosterByClub = new Map(clubWorld.map(club => [club.name, club.roster]));
+    const simulatedFixtures: { clubName: string; roster: Player[]; goalsScored: number }[] = [];
+
     for (let i = 0; i < otherTeams.length; i += 2) {
       const home = otherTeams[i];
       const away = otherTeams[i + 1];
@@ -1317,6 +1531,8 @@ export default function MatchCenter({
 
       applyResult(home, homeGoals, awayGoals, homeResult);
       applyResult(away, awayGoals, homeGoals, awayResult);
+      simulatedFixtures.push({ clubName: home, roster: rosterByClub.get(home) ?? [], goalsScored: homeGoals });
+      simulatedFixtures.push({ clubName: away, roster: rosterByClub.get(away) ?? [], goalsScored: awayGoals });
     }
 
     const parsedRound = Number(nextMatch.id.split('_')[1]);
@@ -1366,11 +1582,70 @@ export default function MatchCenter({
       starterIds: liveStarters
     });
 
+    const kickoffStarters = kickoffStartersRef.current;
+    const userMatchMinutes: Record<string, number> = {};
+    playedPlayerIds.forEach(playerId => {
+      const wasKickoffStarter = kickoffStarters.includes(playerId);
+      const isFinalStarter = liveStarters.includes(playerId);
+      userMatchMinutes[playerId] = wasKickoffStarter && isFinalStarter ? 90
+        : wasKickoffStarter && !isFinalStarter ? 70
+        : !wasKickoffStarter && isFinalStarter ? 20
+        : 45;
+    });
+    const tacticalIntensity = Math.round((liveTactic.pressing + liveTactic.tempo) / 2);
+    // Fase 8A: piccoli modificatori dallo staff operativo persistente (preparatore, fisioterapista,
+    // allenatore dello sviluppo), da sommare - non sostituire - ai cicli fitness/sviluppo gia' esistenti.
+    // Fase 8B: le strutture del club aggiungono solo un piccolo bonus aggiuntivo, con lo stesso cap,
+    // allo staff coerente (centro sportivo, centro medico, settore giovanile, scouting, analisi).
+    const clubStaffModifiers = applyFacilityBonusToStaffModifiers(
+      getClubStaffModifiers(careerWorld.clubStaffState),
+      careerWorld.clubFacilitiesState
+    );
+
     const fitnessResolution = resolvePostMatchFitness(personalityResolution.players, {
       opponent: nextMatch.opponent,
       round: roundNumber,
+      season: CURRENT_SEASON,
       startedIds: liveStarters,
-      playedIds: playedPlayerIds
+      playedIds: playedPlayerIds,
+      userMatchMinutes,
+      tacticalIntensity,
+      fitnessStaffQuality: clubStaffModifiers.fitnessQuality,
+      physioStaffQuality: clubStaffModifiers.physioQuality
+    });
+
+    // ─ Allenamento e sviluppo: avanza solo qui (una volta a giornata), mai al click di un bottone ─
+    const slotPresets = POSITION_PRESETS[liveTactic.module] ?? [];
+    const slotRoleByPlayerId: Record<string, Player['role'] | undefined> = {};
+    liveStarters.forEach((playerId, index) => { slotRoleByPlayerId[playerId] = slotPresets[index]?.role; });
+    const clubStaffForDevelopment = buildClubStaff(userClubProfile);
+    const boardStaffCompetence = clubStaffForDevelopment.length
+      ? clubStaffForDevelopment.reduce((sum, member) => sum + member.competence, 0) / clubStaffForDevelopment.length
+      : 60;
+    // L'allenatore dello sviluppo persistente pesa quanto la media storica del resto dello staff dirigenziale.
+    const staffCompetence = (boardStaffCompetence + clubStaffModifiers.developmentQuality) / 2;
+    // Il settore giovanile aiuta lo sviluppo solo dei giocatori gia' academy/local esistenti:
+    // nessun nuovo giovane viene creato, e' solo un piccolo extra sul modificatore di crescita gia' presente.
+    const youthAcademyGrowthBonus = getFacilityStaffBonus(careerWorld.clubFacilitiesState).youthAcademyBonus / 100;
+    const projectGrowthModifierByPlayerId: Record<string, number> = {};
+    playedPlayerIds.forEach(playerId => {
+      const projectPlayer = fitnessResolution.players.find(item => item.id === playerId);
+      if (!projectPlayer) return;
+      const role = getPlayerProjectRole(projectPlayer, { starters: liveStarters, bench: liveBench, seasonStats: playerStats, clubHistory, round: roundNumber });
+      const academyBonus = isAcademyOrLocalPlayer(clubHistory, projectPlayer.name) ? youthAcademyGrowthBonus : 0;
+      projectGrowthModifierByPlayerId[playerId] = role.growthModifier + academyBonus;
+    });
+    const developmentResolution = advancePlayerDevelopmentCycle(fitnessResolution.players, {
+      round: roundNumber,
+      season: CURRENT_SEASON,
+      startedIds: liveStarters,
+      playedIds: playedPlayerIds,
+      userMatchMinutes,
+      matchRatings: liveRatings,
+      slotRoleByPlayerId,
+      projectGrowthModifierByPlayerId,
+      staffCompetence,
+      seasonFinished
     });
 
     const dnaResolution = evolveTeamDNAAfterMatch(teamDNA, {
@@ -1380,13 +1655,13 @@ export default function MatchCenter({
       scoreOpponent,
       opponent: nextMatch.opponent,
       opponentRating,
-      playedPlayers: fitnessResolution.players.filter(player => playedPlayerIds.includes(player.id))
+      playedPlayers: developmentResolution.players.filter(player => playedPlayerIds.includes(player.id))
     });
     const seasonResolution = seasonFinished
       ? evolveTeamDNAEndOfSeason(dnaResolution.dna, {
           club: userClubProfile,
           standings: rankedStandings,
-          players: fitnessResolution.players,
+          players: developmentResolution.players,
           tactic: liveTactic
         })
       : null;
@@ -1405,7 +1680,7 @@ export default function MatchCenter({
     const chapterImpact = advanceSeasonNarrative(seasonNarrative, {
       club: userClubProfile,
       standings: rankedStandings,
-      players: fitnessResolution.players,
+      players: developmentResolution.players,
       teamDNA: nextTeamDNA,
       history: clubHistory,
       lastMatch: {
@@ -1441,31 +1716,706 @@ export default function MatchCenter({
       ? startNextSeasonNarrative(summerImpact.narrative, userClubProfile, nextTeamDNA)
       : chapterImpact.narrative;
 
-    setPlayerStats(current => applyMatchToPlayerSeasonStats(
-      current.length ? current : playerStats,
-      {
-        userTeamName: teamName,
-        opponentName: nextMatch.opponent,
-        userPlayers: chapterPlayers,
-        opponentPlayers,
-        playedUserIds: playedPlayerIds,
-        playedOpponentIds: opponentPlayedPlayerIds.length ? opponentPlayedPlayerIds : opponentStarters,
-        events: liveEvents,
-        stats: liveStats
-      }
+    const rivalryHeat = clubHistory.rivalries.find(rivalry => rivalry.opponent === nextMatch.opponent)?.heat ?? 0;
+    const emotionalResult = processMatchForEmotionalNarratives(emotionalNarratives, {
+      matchId: nextMatch.id,
+      round: roundNumber,
+      season: CURRENT_SEASON,
+      seasonFinished,
+      teamName,
+      opponentName: nextMatch.opponent,
+      scoreUser,
+      scoreOpponent,
+      ownRating: getClubCompetitiveRating(teamName, clubWorld),
+      opponentRating,
+      standings: rankedStandings,
+      rivalryHeat,
+      events: liveEvents,
+      stats: liveStats,
+      prematchPlayers: players,
+      postmatchPlayers: chapterPlayers,
+      playedPlayerIds,
+      starterIds: liveStarters
+    });
+    setEmotionalNarratives(emotionalResult.state);
+
+    const hasMajorEmotionalStory = emotionalResult.state.narratives.some(
+      narrative => narrative.relatedMatchIds.includes(nextMatch.id) && narrative.importance >= 55
+    );
+
+    const nextPlayerStats = applySimulatedRoundToPlayerSeasonStats(
+      applyMatchToPlayerSeasonStats(
+        playerStats,
+        {
+          userTeamName: teamName,
+          opponentName: nextMatch.opponent,
+          userPlayers: chapterPlayers,
+          opponentPlayers,
+          playedUserIds: playedPlayerIds,
+          playedOpponentIds: opponentPlayedPlayerIds.length ? opponentPlayedPlayerIds : opponentStarters,
+          events: liveEvents,
+          stats: liveStats,
+          ratings: liveRatings,
+          userMatchMinutes
+        }
+      ),
+      simulatedFixtures
+    );
+    setPlayerStats(nextPlayerStats);
+
+    const minutesByPlayerId: Record<string, number> = {};
+    nextPlayerStats.forEach(stat => { minutesByPlayerId[stat.playerId] = stat.minutesPlayed; });
+    const promiseResolution = resolvePlayingTimePromises(chapterPlayers, {
+      round: roundNumber,
+      seasonFinished,
+      minutesByPlayerId
+    });
+    promiseResolution.memories.forEach(addClubMemory);
+
+    const justBrokenPromisePlayerIds = chapterPlayers
+      .filter(before => {
+        const after = promiseResolution.players.find(p => p.id === before.id);
+        return after && before.playingTimePromise?.status !== 'broken' && after.playingTimePromise?.status === 'broken';
+      })
+      .map(p => p.id);
+    const justAtRiskPromisePlayerIds = chapterPlayers
+      .filter(before => {
+        const after = promiseResolution.players.find(p => p.id === before.id);
+        return after && before.playingTimePromise?.status !== 'at_risk' && after.playingTimePromise?.status === 'at_risk';
+      })
+      .map(p => p.id);
+    const justCompletedPromisePlayerIds = chapterPlayers
+      .filter(before => {
+        const after = promiseResolution.players.find(p => p.id === before.id);
+        return after && before.playingTimePromise?.status !== 'completed' && after.playingTimePromise?.status === 'completed';
+      })
+      .map(p => p.id);
+
+    const youthMinutesTotal = chapterPlayers
+      .filter(player => player.age <= 21)
+      .reduce((sum, player) => sum + (nextPlayerStats.find(stat => stat.playerId === player.id)?.minutesPlayed ?? 0), 0);
+    const decisiveYoungsterName = emotionalResult.state.narratives.find(narrative => (
+      narrative.relatedMatchIds.includes(nextMatch.id)
+      && (narrative.type === 'unexpected_hero' || narrative.type === 'redemption_arc')
+      && chapterPlayers.some(player => player.id === narrative.playerId && player.age <= 23)
+    ))?.playerName;
+
+    const scorerIds = new Set(liveEvents.filter(e => e.type === 'goal' && e.team === 'user' && e.playerId).map(e => e.playerId as string));
+    const assistIds = new Set(liveEvents.filter(e => e.type === 'goal' && e.team === 'user' && e.assistPlayerId).map(e => e.assistPlayerId as string));
+    const matchNarrativeIds = new Set(
+      emotionalResult.state.narratives
+        .filter(n => n.relatedMatchIds.includes(nextMatch.id) && n.playerId)
+        .map(n => n.playerId as string)
+    );
+    const worstRatedUserId = Object.entries(liveRatings)
+      .filter(([, rating]) => rating <= 5.2)
+      .sort((a, b) => a[1] - b[1])[0]?.[0];
+    const contributorIds = new Set<string>([...scorerIds, ...assistIds, ...matchNarrativeIds, ...(worstRatedUserId ? [worstRatedUserId] : [])]);
+    const matchContributors: CareerWorldPlayerContribution[] = Array.from(contributorIds).slice(0, 5).map(id => {
+      const contributorPlayer = chapterPlayers.find(p => p.id === id);
+      if (!contributorPlayer) return null;
+      const narrative = emotionalResult.state.narratives.find(n => n.playerId === id && n.relatedMatchIds.includes(nextMatch.id));
+      return {
+        playerId: id,
+        playerName: contributorPlayer.name,
+        age: contributorPlayer.age,
+        goals: liveEvents.filter(e => e.type === 'goal' && e.team === 'user' && e.playerId === id).length,
+        assists: liveEvents.filter(e => e.type === 'goal' && e.team === 'user' && e.assistPlayerId === id).length,
+        rating: liveRatings[id] ?? 6,
+        legendScore: contributorPlayer.careerMemory.legendScore,
+        isAcademyOrLocal: isAcademyOrLocalPlayer(clubHistory, contributorPlayer.name),
+        isNarrativeHero: narrative?.type === 'unexpected_hero' || narrative?.type === 'redemption_arc',
+        isNarrativeHeroicDefeat: narrative?.type === 'heroic_defeat'
+      };
+    }).filter((c): c is CareerWorldPlayerContribution => c !== null);
+
+    const matchContext = {
+      matchId: nextMatch.id,
+      round: roundNumber,
+      season: CURRENT_SEASON,
+      teamName,
+      opponentName: nextMatch.opponent,
+      isHome: nextMatch.isHome,
+      scoreUser,
+      scoreOpponent,
+      ownRating: getClubCompetitiveRating(teamName, clubWorld),
+      opponentRating,
+      standings: rankedStandings,
+      rivalryHeat,
+      hasMajorEmotionalStory,
+      club: userClubProfile,
+      totalRounds: calendar.length,
+      seasonFinished,
+      currentBudget: budget,
+      initialBudget: userClubProfile.transferBudget,
+      youthMinutesTotal,
+      decisiveYoungsterName,
+      matchContributors
+    };
+    const careerWorldResult = processCareerWorldAfterMatch(careerWorld, matchContext);
+    // Fase 8A: al massimo un report staff per giornata, generato solo da segnali reali gia' calcolati sopra.
+    const clubStaffState = advanceClubStaffReports(careerWorldResult.state.clubStaffState, {
+      round: roundNumber,
+      season: CURRENT_SEASON,
+      players: developmentResolution.players,
+      starters: liveStarters,
+      tactic: liveTactic,
+      scoutedTargets
+    });
+    // Fase 8B: avanza progetti/degrado strutture una volta a giornata, in linea con lo staff.
+    const clubFacilitiesState = advanceClubFacilities(careerWorldResult.state.clubFacilitiesState, roundNumber, CURRENT_SEASON);
+    setCareerWorld({ ...careerWorldResult.state, clubStaffState, clubFacilitiesState });
+
+    const matchImportance = computeMatchImportance(matchContext);
+    const isDerbyMatch = Boolean(userClubProfile.city && opponentClub?.city && userClubProfile.city === opponentClub.city);
+    const ownStandingRank = rankedStandings.find(item => item.name === teamName)?.rank ?? 99;
+    const oppStandingRank = rankedStandings.find(item => item.name === nextMatch.opponent)?.rank ?? 99;
+    const isTitleRaceMatch = roundNumber >= 20 && ownStandingRank <= 4 && oppStandingRank <= 4 && Math.abs(ownStandingRank - oppStandingRank) <= 3;
+
+    const exUserClubOpponentPlayers = (userClub && opponentClub)
+      ? opponentPlayers.filter(item => isFormerClubPlayer(item, userClub.id, opponentClub.id, opponentClub.name, CURRENT_SEASON))
+      : [];
+    const decisiveExPlayer = exUserClubOpponentPlayers.find(item => (
+      liveEvents.some(e => e.type === 'goal' && e.team === 'opponent' && e.playerId === item.id)
+    ));
+    // Fan standings (Fase 4B) are keyed by the player's pre-sale id; the sale wraps it as
+    // `ai_buy_/ai_offer_<clubId>_<originalId>`, so recover the suffix to bridge the two records.
+    const decisiveExPlayerOriginalId = decisiveExPlayer && userClub
+      ? decisiveExPlayer.id.match(new RegExp(`${userClub.id}_p\\d+$`))?.[0]
+      : undefined;
+    const decisiveExPlayerIsNotable = Boolean(decisiveExPlayer && (
+      (decisiveExPlayerOriginalId && careerWorld.fanState.playerStandings.some(s => s.playerId === decisiveExPlayerOriginalId && s.affection >= 60))
+      || isAcademyOrLocalPlayer(clubHistory, decisiveExPlayer.name)
     ));
 
-    setPlayers(chapterPlayers);
-    setBudget(budget + prize + chapterBudgetDelta);
+    setClubHistory(current => applyRivalryMatchResult(current, {
+      opponent: nextMatch.opponent,
+      season: CURRENT_SEASON,
+      round: roundNumber,
+      scoreUser,
+      scoreOpponent,
+      isDerby: isDerbyMatch,
+      isTitleRace: isTitleRaceMatch,
+      hasMajorEmotionalStory,
+      matchImportance,
+      decisiveExPlayerName: decisiveExPlayer?.name
+    }));
+    const exPlayerReturnMemory = decisiveExPlayer ? buildExPlayerReturnMemory({
+      playerName: decisiveExPlayer.name,
+      opponent: nextMatch.opponent,
+      season: CURRENT_SEASON,
+      scoreUser,
+      scoreOpponent,
+      isNotable: decisiveExPlayerIsNotable
+    }) : null;
+    if (exPlayerReturnMemory) addClubMemory(exPlayerReturnMemory);
+
+    // Media processing runs last: fans, board, narratives and rivalry are already settled above.
+    const isStrongRivalryMatch = ['rivalita_forte', 'nemico_storico'].includes(
+      clubHistory.rivalries.find(r => r.opponent === nextMatch.opponent)?.status ?? ''
+    );
+    const criticizedPlayerName = careerWorldResult.state.fanState.mostCriticizedPlayerIds
+      .map(id => chapterPlayers.find(p => p.id === id)?.name)
+      .find((name): name is string => Boolean(name));
+    const brokenPromisePlayerName = justBrokenPromisePlayerIds
+      .map(id => chapterPlayers.find(p => p.id === id)?.name)
+      .find((name): name is string => Boolean(name));
+    const objectiveJustAtRisk = careerWorldResult.state.ownershipState.currentObjectives.find(objective => {
+      const before = careerWorld.ownershipState.currentObjectives.find(o => o.id === objective.id);
+      return objective.status === 'a_rischio' && before?.status !== 'a_rischio';
+    });
+    const objectiveJustCompleted = careerWorldResult.state.ownershipState.currentObjectives.find(objective => {
+      const before = careerWorld.ownershipState.currentObjectives.find(o => o.id === objective.id);
+      return objective.status === 'completato' && before?.status !== 'completato';
+    });
+    const goalDiffForMedia = scoreOpponent - scoreUser;
+    const isHeavyDefeatForMedia = goalDiffForMedia >= 3 || (matchImportance >= 55 && goalDiffForMedia >= 2);
+    const isSurpriseResultForMedia = (scoreUser >= scoreOpponent && oppStandingRank <= ownStandingRank - 6)
+      || (scoreUser < scoreOpponent && ownStandingRank <= oppStandingRank - 6);
+
+    const mediaMatchResult = processMediaAfterMatch(careerWorldResult.state, {
+      matchId: nextMatch.id,
+      season: CURRENT_SEASON,
+      round: roundNumber,
+      teamName,
+      opponentName: nextMatch.opponent,
+      scoreUser,
+      scoreOpponent,
+      isDerby: isDerbyMatch,
+      isStrongRivalry: isStrongRivalryMatch,
+      matchImportance,
+      hasMajorEmotionalStory,
+      decisiveYoungsterName,
+      isHeavyDefeat: isHeavyDefeatForMedia,
+      isSurpriseResult: isSurpriseResultForMedia,
+      criticizedPlayerName,
+      brokenPromisePlayerName,
+      boardConfidence: careerWorldResult.state.ownershipState.boardConfidence,
+      objectiveAtRiskTitle: objectiveJustAtRisk?.title,
+      objectiveCompletedTitle: objectiveJustCompleted?.title
+    });
+    setCareerWorld(mediaMatchResult.state);
+    mediaMatchResult.news.forEach(item => addNewNews(item.title, item.content, item.category));
+
+    // Market rumors: build signals only for a handful of real candidates (promise involved,
+    // listed for sale, or already flagged by fan sentiment), never for the whole squad.
+    const rumorCandidateIds = new Set<string>([
+      ...promiseResolution.players.filter(player => player.playingTimePromise).map(player => player.id),
+      ...promiseResolution.players.filter(player => player.status === 'Cedibile').map(player => player.id),
+      ...mediaMatchResult.state.fanState.mostCriticizedPlayerIds,
+      ...mediaMatchResult.state.fanState.mostLovedPlayerIds,
+    ]);
+    const isFinancialFragile = mediaMatchResult.state.ownershipState.financialStatus === 'in_tensione'
+      || mediaMatchResult.state.ownershipState.financialStatus === 'critico';
+    const marketRumorPlayerSignals: MarketRumorPlayerSignal[] = Array.from(rumorCandidateIds)
+      .map(id => promiseResolution.players.find(player => player.id === id))
+      .filter((player): player is Player => Boolean(player))
+      .map(player => {
+        const role = getPlayerProjectRole(player, { starters: liveStarters, bench: liveBench, seasonStats: nextPlayerStats, clubHistory, round: roundNumber });
+        const minutesShare = (nextPlayerStats.find(stat => stat.playerId === player.id)?.minutesPlayed ?? 0) / Math.max(1, roundNumber * 90);
+        const signal: MarketRumorPlayerSignal = {
+          playerId: player.id,
+          playerName: player.name,
+          promiseId: player.playingTimePromise?.id,
+          promiseJustAtRisk: justAtRiskPromisePlayerIds.includes(player.id),
+          promiseJustBroken: justBrokenPromisePlayerIds.includes(player.id),
+          promiseJustCompleted: justCompletedPromisePlayerIds.includes(player.id),
+          moraleVeryLow: player.morale <= 32,
+          moraleLow: player.morale <= 45,
+          isFrustratedTalent: role.key === 'frustratedTalent',
+          isOutOfProject: role.key === 'surplus' || role.key === 'brokenPromise',
+          longMinutesDrought: roundNumber >= 8 && minutesShare < 0.15,
+          coachRelationVeryLow: player.relationships.coach < 35,
+          isBelovedOrIdol: mediaMatchResult.state.fanState.mostLovedPlayerIds.includes(player.id),
+          isAcademyOrLocal: isAcademyOrLocalPlayer(clubHistory, player.name),
+          isListedForSale: player.status === 'Cedibile',
+          financialFragile: isFinancialFragile,
+        };
+        return signal;
+      });
+
+    const rumorResult = processMarketRumorsAfterMatch(mediaMatchResult.state, {
+      round: roundNumber,
+      season: CURRENT_SEASON,
+      playerSignals: marketRumorPlayerSignals,
+    });
+    setCareerWorld(rumorResult);
+
+    const dialogueTriggerResult = detectPostMatchConversationTriggers(playerConversations, {
+      round: roundNumber,
+      matchId: nextMatch.id,
+      opponentName: nextMatch.opponent,
+      rivalryHeat,
+      beforePlayers: players,
+      afterPlayers: promiseResolution.players,
+      playerStats: nextPlayerStats,
+      starters: liveStarters,
+      playedPlayerIds,
+      justBrokenPromisePlayerIds,
+      emotionalNarratives: emotionalResult.state,
+      clubHistory
+    });
+    setPlayerConversations(dialogueTriggerResult.state);
+
+    // Fase 8C: bonus contrattuali reali (presenza/gol/clean sheet), idempotenti per matchId; a fine
+    // stagione anche aumenti, bonus fedelta e scadenze contrattuali, anch'essi idempotenti per stagione.
+    const goalsByPlayerId: Record<string, number> = {};
+    liveEvents.filter(e => e.type === 'goal' && e.team === 'user' && e.playerId).forEach(e => {
+      goalsByPlayerId[e.playerId as string] = (goalsByPlayerId[e.playerId as string] ?? 0) + 1;
+    });
+    const contractBonusResolution = processContractBonusesAfterMatch(promiseResolution.players, userClubProfile, {
+      matchId: nextMatch.id,
+      round: roundNumber,
+      season: CURRENT_SEASON,
+      playedIds: playedPlayerIds,
+      startedIds: liveStarters,
+      userMatchMinutes,
+      goalsByPlayerId,
+      cleanSheet: scoreOpponent === 0
+    });
+    const achievedTeamGoal = seasonFinished && careerWorldResult.state.ownershipState.currentObjectives.some(
+      o => o.category === 'sportivo' && o.status === 'completato'
+    );
+    // Bug fix stabilizzazione: CURRENT_SEASON e' una costante statica ('2026/27'), mai la vera
+    // stagione trascorsa. Usarla come season-id del guard idempotente bloccava aumenti/scadenze
+    // contrattuali gia' dalla seconda transizione di stagione in poi (eventId sempre uguale ->
+    // "gia' processato"). getSeasonLabel(nextTeamDNA.seasonsTracked) e' invece l'identificatore
+    // reale gia' usato altrove (finestre di mercato) per la stagione appena chiusa.
+    const contractSeasonTransition = seasonFinished
+      ? processContractSeasonTransition(contractBonusResolution.players, userClubProfile, getSeasonLabel(nextTeamDNA.seasonsTracked), careerWorld.clubWageBudgetState, achievedTeamGoal)
+      : null;
+    const finalPlayersWithContracts = contractSeasonTransition?.players ?? contractBonusResolution.players;
+
+    // Fase 9: review del vivaio ogni 4 giornate (mai piu' spesso), intake stagionale idempotente
+    // (funge anche da rete di sicurezza per i vecchi salvataggi che non hanno ancora un vivaio).
+    const youthReviewResult = runYouthAcademyReview(
+      finalPlayersWithContracts,
+      careerWorld.youthAcademyState,
+      userClubProfile,
+      careerWorld.clubFacilitiesState,
+      careerWorld.clubStaffState,
+      roundNumber,
+      nextTeamDNA
+    );
+    const youthIntakeResult = seasonFinished
+      ? ensureSeasonalYouthIntake(
+          youthReviewResult.players,
+          youthReviewResult.state,
+          userClubProfile,
+          careerWorld.clubFacilitiesState,
+          careerWorld.clubStaffState,
+          // Stesso bug fix del guard contrattuale sopra: CURRENT_SEASON e' statica, lastIntakeSeason
+          // andrebbe altrimenti confrontato sempre con lo stesso valore, bloccando i nuovi prospetti
+          // dalla seconda stagione in poi.
+          getSeasonLabel(nextTeamDNA.seasonsTracked),
+          nextTeamDNA
+        )
+      : null;
+    const finalPlayersWithYouth = youthIntakeResult?.players ?? youthReviewResult.players;
+    const finalYouthAcademyState = youthIntakeResult?.state ?? youthReviewResult.state;
+
+    // Fase M1: verifica reale (solo presenze effettive gia' tracciate) se un obbligo di riscatto
+    // condizionato va attivato; mai un acquisto qui, solo il flag (processato solo a fine stagione).
+    const playersWithLoanChecks = finalPlayersWithYouth.map(player => {
+      if (!player.loanState) return player;
+      const seasonAppearances = nextPlayerStats.find(stat => stat.playerId === player.id)?.appearances ?? 0;
+      return checkLoanAppearanceObligation(player, seasonAppearances);
+    });
+
+    // Fine stagione (stesso punto sicuro gia' usato per contratti/vivaio): risolve prestiti e obblighi
+    // attivati una sola volta (guardia su processedSeasonEnd dentro resolveLoanAtSeasonEnd).
+    let loanTransferBudgetDelta = 0;
+    const returnedLoanPlayerIds: string[] = [];
+    const convertedLoanPlayerIds: string[] = [];
+    const finalPlayersWithLoans = seasonFinished
+      ? playersWithLoanChecks.reduce<Player[]>((acc, player) => {
+          if (!player.loanState) { acc.push(player); return acc; }
+          const outcome = resolveLoanAtSeasonEnd(player, userClubProfile, CURRENT_SEASON);
+          if (!outcome) { acc.push(player); return acc; }
+          loanTransferBudgetDelta += outcome.transferBudgetDelta;
+          if (outcome.kind === 'returned') { returnedLoanPlayerIds.push(player.id); return acc; }
+          if (outcome.kind === 'converted_permanent') { convertedLoanPlayerIds.push(player.id); }
+          acc.push(outcome.player);
+          return acc;
+        }, [])
+      : playersWithLoanChecks;
+
+    // Mercato M2A: scadenza reale del contro-riscatto alla vera transizione di stagione (unico
+    // contatore stagionale affidabile: nextTeamDNA.seasonsTracked, gia' incrementato una sola volta).
+    // Tocca sia la mia rosa sia i roster IA, perche' una clausola puo restare legata a un giocatore
+    // che ora gioca altrove.
+    const finalPlayersWithClauses = seasonFinished
+      ? expireClausesForSeason(finalPlayersWithLoans, nextTeamDNA.seasonsTracked)
+      : finalPlayersWithLoans;
+    const worldAfterClauseExpiry = seasonFinished
+      ? worldAfterRound.map(club => ({ ...club, roster: expireClausesForSeason(club.roster, nextTeamDNA.seasonsTracked) }))
+      : worldAfterRound;
+
+    // Mercato M2C: scadenza reale di prelazione/anti-rivale (stesso schema del contro-riscatto M2A).
+    const finalPlayersWithProtectiveClauses = seasonFinished
+      ? expireProtectiveClausesForSeason(finalPlayersWithClauses, nextTeamDNA.seasonsTracked)
+      : finalPlayersWithClauses;
+    const worldAfterProtectiveClauseExpiry = seasonFinished
+      ? worldAfterClauseExpiry.map(club => ({ ...club, roster: expireProtectiveClausesForSeason(club.roster, nextTeamDNA.seasonsTracked) }))
+      : worldAfterClauseExpiry;
+
+    // Mercato M2C: fine scambio di prestiti. Riporta a casa i MIEI giocatori attualmente in prestito
+    // presso un altro club come meta' di uno scambio (l'altra meta', gia' in players, e' gestita dal
+    // loop prestiti sopra tramite resolveLoanAtSeasonEnd: purchaseClause 'none' -> sempre 'returned').
+    const loanSwapReturn = seasonFinished ? returnLoanSwapPlayersHome(worldAfterProtectiveClauseExpiry, userClubProfile.id) : null;
+    const finalPlayersWithLoanSwaps = loanSwapReturn
+      ? [...finalPlayersWithProtectiveClauses, ...loanSwapReturn.returningPlayers]
+      : finalPlayersWithProtectiveClauses;
+    const worldAfterLoanSwapReturn = loanSwapReturn ? loanSwapReturn.clubWorld : worldAfterProtectiveClauseExpiry;
+
+    // Mercato M2B: precontratti. Trasferisce a parametro zero, una sola volta, solo qui (guardia
+    // sullo status stesso: da 'active' passa a 'completed'/'failed', mai riprocessato dopo F5).
+    // Mercato M3: visita medica reale alla vera transizione stagionale (parametro currentRound in piu).
+    const futureContractResult = seasonFinished
+      ? processFutureContractAgreementsAtSeasonEnd(careerWorld.futureContractAgreements, worldAfterLoanSwapReturn, userClubProfile, CURRENT_SEASON, roundNumber)
+      : null;
+    const finalPlayersWithPrecontracts = futureContractResult
+      ? [...finalPlayersWithLoanSwaps, ...futureContractResult.newPlayers]
+      : finalPlayersWithLoanSwaps;
+    const worldAfterPrecontracts = futureContractResult && futureContractResult.completedPlayerIdsBySourceClub.length > 0
+      ? worldAfterLoanSwapReturn.map(club => {
+          const idsToRemove = futureContractResult.completedPlayerIdsBySourceClub.filter(e => e.sourceClubId === club.clubId).map(e => e.playerId);
+          if (idsToRemove.length === 0) return club;
+          return { ...club, roster: club.roster.filter(p => !idsToRemove.includes(p.id)) };
+        })
+      : worldAfterLoanSwapReturn;
+
+    // Mercato Cessioni C1: interesse dinamico dei club IA sulla mia rosa. Un solo tick per giornata
+    // (guardia lastProcessedRound dentro processOutgoingMarketTick), mai un'offerta immediata solo
+    // perche' un giocatore e' stato listato: interesse != offerta.
+    const outgoingMarketTick = processOutgoingMarketTick(careerWorld.outgoingMarketState, {
+      players: finalPlayersWithPrecontracts,
+      clubWorld: worldAfterPrecontracts,
+      currentRound: roundNumber,
+      myTeamName: teamName,
+      playerStats: nextPlayerStats,
+      incomingOffers
+    });
+
+    // Mercato M3: finestra di mercato reale. A fine stagione si rigenera (estiva/invernale della
+    // nuova stagione, gia' corrette per la giornata 1); altrimenti si aggiorna lo stato una volta a
+    // giornata (stesso schema del tick C1 sopra).
+    const nextTransferWindows = seasonFinished
+      ? createSeasonTransferWindows(getSeasonLabel(nextTeamDNA.seasonsTracked))
+      : refreshTransferWindowsStatus(careerWorld.transferWindows, roundNumber);
+
+    // Mercato M3: scadenze reali delle trattative/offerte, processate una sola volta a giornata (mai
+    // durante il render). Nessun costo, nessun giocatore spostato: solo un cambio di stato.
+    const scoutedTargetsAfterDeadlines = processNegotiationDeadlines(scoutedTargets, roundNumber, nextTransferWindows);
+    const incomingOffersAfterDeadlines = processIncomingOfferDeadlines(incomingOffers, roundNumber, nextTransferWindows);
+
+    // Mercato M4: concorrenza tra club/aste/agenti, solo per trattative di acquisto a titolo
+    // definitivo ancora attive (mai prestiti/scambi/svincolati/precontratti). Un tick reale a
+    // giornata per trattativa (idempotente su processedCompetitionEventIds dentro il tick stesso).
+    const activeTransferWindowForCompetition = getActiveTransferWindow(nextTransferWindows);
+    let nextTransferCompetitions = careerWorld.transferCompetitions;
+    let nextPlayerAgentProfiles = careerWorld.playerAgentProfiles;
+    const scoutedTargetsAfterCompetition = scoutedTargetsAfterDeadlines.map(target => {
+      if (!isCompetitionEligibleNegotiation(target.id, target.terms?.baseType, !!target.swapTerms, !!target.loanSwapTerms)) return target;
+      const sourceClub = worldAfterPrecontracts.find(club => club.name === target.currentClub);
+      const realPlayer = sourceClub?.roster.find(p => p.name === target.playerName);
+      if (!sourceClub || !realPlayer) return target;
+
+      if (!nextPlayerAgentProfiles.some(p => p.playerId === realPlayer.id)) {
+        nextPlayerAgentProfiles = [...nextPlayerAgentProfiles, ensurePlayerAgentProfile(realPlayer, nextPlayerAgentProfiles)].slice(-400);
+      }
+
+      const existingCompetition = nextTransferCompetitions.find(c => c.negotiationId === target.id);
+      const myOfferValue = target.clubAgreedFee ?? target.clubOfferFee ?? target.terms?.upfrontFee ?? 0;
+      const updatedCompetition = processTransferCompetitionTick(existingCompetition, {
+        player: realPlayer,
+        negotiationId: target.id,
+        negotiationStatus: target.status,
+        myOfferValue,
+        sellingClubId: sourceClub.clubId,
+        myClubId: userClubProfile.id,
+        clubWorld: worldAfterPrecontracts,
+        currentRound: roundNumber,
+        windowOpen: isTransferWindowOpen(nextTransferWindows),
+        windowClosingSoon: activeTransferWindowForCompetition?.status === 'closing_soon'
+      });
+      nextTransferCompetitions = [updatedCompetition, ...nextTransferCompetitions.filter(c => c.negotiationId !== target.id)].slice(-60);
+
+      // Rischio concreto di perdita: un rivale chiude prima di me. Nessun costo/rosa toccati (non
+      // era ancora completata): la trattativa fallisce in modo pulito, come un'offerta respinta.
+      if (updatedCompetition.status === 'lost_to_other_club' && target.status !== 'completed') {
+        const winner = updatedCompetition.competingBids.find(b => b.status === 'won')?.clubName ?? 'un club rivale';
+        return {
+          ...target,
+          status: 'club_offer_rejected' as const,
+          concludedAt: new Date().toISOString(),
+          concludedKind: 'rejected' as const,
+          timeline: [...target.timeline, `Il ${winner} chiude l'operazione prima di te: giocatore perso.`]
+        };
+      }
+      return target;
+    });
+
+    setCareerWorld(current => ({
+      ...current,
+      clubWageBudgetState: contractSeasonTransition?.wageBudget
+        ?? calculateClubWageBudget(finalPlayersWithContracts, userClubProfile, current.clubWageBudgetState.season, current.clubWageBudgetState),
+      youthAcademyState: finalYouthAcademyState,
+      outgoingMarketState: outgoingMarketTick.state,
+      futureContractAgreements: futureContractResult?.agreements ?? current.futureContractAgreements,
+      transferWindows: nextTransferWindows,
+      transferCompetitions: nextTransferCompetitions,
+      playerAgentProfiles: nextPlayerAgentProfiles
+    }));
+
+    if (futureContractResult) {
+      futureContractResult.logs.forEach(log => addNewNews('Precontratto', log, 'market'));
+    }
+
+    setScoutedTargets(scoutedTargetsAfterCompetition);
+
+    setIncomingOffers([...outgoingMarketTick.newOffers, ...incomingOffersAfterDeadlines]);
+    if (outgoingMarketTick.newOffers.length > 0) {
+      outgoingMarketTick.newOffers.forEach(offer => {
+        const sourceClub = worldAfterRound.find(club => club.name === offer.fromClub);
+        const isRivalOffer = clubHistory.rivalries.some(r => r.opponent === offer.fromClub && r.heat >= 48);
+        const rumorSignal: MarketRumorPlayerSignal = {
+          playerId: offer.playerId,
+          playerName: offer.playerName,
+          hasIncomingOffer: true,
+          incomingOfferFromClub: offer.fromClub,
+          incomingOfferFromClubId: sourceClub?.clubId,
+          incomingOfferIsRival: isRivalOffer,
+          isBelovedOrIdol: careerWorld.fanState.mostLovedPlayerIds.includes(offer.playerId),
+          isAcademyOrLocal: isAcademyOrLocalPlayer(clubHistory, offer.playerName),
+          financialFragile: careerWorld.ownershipState.financialStatus === 'in_tensione' || careerWorld.ownershipState.financialStatus === 'critico',
+        };
+        setCareerWorld(current => processMarketRumorsAfterTransfer(current, { round: roundNumber, season: CURRENT_SEASON, signal: rumorSignal }));
+      });
+    }
+
+    setPlayers(finalPlayersWithPrecontracts);
+    const returningLoanSwapPlayerIds = loanSwapReturn?.returningPlayers.map(p => p.id) ?? [];
+    if (returnedLoanPlayerIds.length > 0 || (futureContractResult?.newPlayers.length ?? 0) > 0 || returningLoanSwapPlayerIds.length > 0) {
+      const newPrecontractPlayerIds = futureContractResult?.newPlayers.map(p => p.id) ?? [];
+      setStarters(liveStarters.filter(id => !returnedLoanPlayerIds.includes(id)));
+      setBench([...liveBench.filter(id => !returnedLoanPlayerIds.includes(id)), ...newPrecontractPlayerIds, ...returningLoanSwapPlayerIds]);
+    }
+    setBudget(budget + prize + chapterBudgetDelta + loanTransferBudgetDelta);
     setTeamDNA(nextTeamDNA);
     setSeasonNarrative(nextSeasonNarrative);
     setCalendar(seasonFinished ? generateCalendar(teamName, nextTeamDNA.seasonsTracked) : updatedCalendar);
     setStandings(seasonFinished ? calculateInitialStandings() : rankedStandings);
-    setClubWorld(worldAfterRound);
+    setClubWorld(worldAfterPrecontracts);
     setRivalMemories(current => {
       const updated = upsertRivalMemory(current, rivalResolution.memory, teamName);
       return seasonFinished ? advanceRivalMemoriesSeason(updated) : updated;
     });
+
+    // ─── Multi-divisione (Serie A / Serie B): estende il flusso sopra, non lo sostituisce.
+    // In modalita legacy (leagueSystem === null, salvataggi precedenti a questa fase) questo
+    // blocco non fa nulla e resta valido tutto cio' che e' gia' stato impostato sopra. ───
+    if (leagueSystem) {
+      const userClubId = getAnyClubByName(teamName)?.id;
+      const userDivision: CompetitionId = userClubId ? (leagueSystem.clubCompetitionMap[userClubId] ?? 'serie_a') : 'serie_a';
+      const otherDivision: CompetitionId = userDivision === 'serie_a' ? 'serie_b' : 'serie_a';
+      const userCompetition = leagueSystem.competitions[userDivision];
+      const otherCompetition = leagueSystem.competitions[otherDivision];
+
+      const userFixturesAfterResult = userClubId
+        ? applyUserResultToFixtures(userCompetition.fixtures, roundNumber, userClubId, scoreUser, scoreOpponent)
+        : userCompetition.fixtures;
+      const userFixtures = simulateCompetitionRound(userFixturesAfterResult, roundNumber, worldAfterRound, leagueSystem.season, userClubId);
+
+      const otherClubWorld = otherDivision === 'serie_b' ? createInitialSerieBClubWorld() : createInitialClubWorld();
+      const otherFixtures = simulateCompetitionRound(otherCompetition.fixtures, roundNumber, otherClubWorld, leagueSystem.season);
+
+      const clubsInDivision = (division: CompetitionId) => Object.entries(leagueSystem.clubCompetitionMap)
+        .filter(([, div]) => div === division)
+        .map(([id]) => ({ id, name: getAnyClubById(id)?.name ?? id }));
+
+      const userStandingsAfterRound = computeStandingsFromFixtures(clubsInDivision(userDivision), userFixtures);
+      const otherStandingsAfterRound = computeStandingsFromFixtures(clubsInDivision(otherDivision), otherFixtures);
+
+      const stadiumFor = (name: string) => getAnyClubByName(name)?.stadium ?? 'Stadio Comunale';
+      const seasonStartYear = getSeasonStartYear(leagueSystem.season);
+      const userLeagueCalendar = userClubId
+        ? deriveClubMatchCalendar(userFixtures, userClubId, stadiumFor, seasonStartYear)
+        : updatedCalendar;
+
+      const totalRounds = COMPETITION_DEFINITIONS[userDivision].rounds;
+      const regularSeasonJustFinished = roundNumber >= totalRounds;
+
+      let nextLeagueSystem: LeagueSystemState = {
+        ...leagueSystem,
+        competitions: {
+          ...leagueSystem.competitions,
+          [userDivision]: { ...userCompetition, fixtures: userFixtures, standings: userStandingsAfterRound, calendar: userLeagueCalendar, completedRound: roundNumber },
+          [otherDivision]: { ...otherCompetition, fixtures: otherFixtures, standings: otherStandingsAfterRound, completedRound: roundNumber },
+        },
+      };
+
+      setCalendar(userLeagueCalendar);
+      setStandings(userStandingsAfterRound);
+
+      if (regularSeasonJustFinished) {
+        const clubNameById = new Map<string, string>();
+        Object.keys(leagueSystem.clubCompetitionMap).forEach(id => clubNameById.set(id, getAnyClubById(id)?.name ?? id));
+        const clubIdByName = new Map<string, string>();
+        clubNameById.forEach((name, id) => clubIdByName.set(name, id));
+
+        const serieBFinal = nextLeagueSystem.competitions.serie_b;
+        const serieAFinal = nextLeagueSystem.competitions.serie_a;
+        const serieBOutcome = determineRegularSeasonOutcome(serieBFinal.standings, clubIdByName, SERIE_B_PROMOTION_RULES);
+        const serieBWorldForRating = userDivision === 'serie_b' ? worldAfterRound : otherClubWorld;
+
+        const rankedSerieB = [...serieBFinal.standings].sort((a, b) => a.rank - b.rank);
+        const thirdPlaceClubId = serieBOutcome.playoffAutoPromotedThirdPlace ? undefined : clubIdByName.get(rankedSerieB[2]?.name ?? '');
+        const fourthPlaceClubId = clubIdByName.get(rankedSerieB[3]?.name ?? '');
+        const standingsRank = (clubId: string) => serieBFinal.standings.find(s => s.name === clubNameById.get(clubId))?.rank ?? 99;
+
+        // Postseason risolto interamente via simulatore CPU esistente (rating/forma), anche se il
+        // club utente vi partecipa: la partecipazione interattiva reale nel MatchCenter e' un
+        // passo successivo, documentato nel report finale, non ancora cablato in questa fase.
+        let playoff = buildSerieBPlayoffBracket(serieBOutcome.playoffParticipants, clubNameById, leagueSystem.season);
+        playoff = advancePostseasonForCpu(playoff, serieBWorldForRating);
+        playoff = advanceSerieBPlayoffStage(playoff, standingsRank, thirdPlaceClubId, fourthPlaceClubId, clubNameById);
+        playoff = advancePostseasonForCpu(playoff, serieBWorldForRating);
+        playoff = advanceSerieBPlayoffFinal(playoff, clubNameById, standingsRank);
+        playoff = advancePostseasonForCpu(playoff, serieBWorldForRating);
+        playoff = finalizePostseason(playoff);
+
+        let playout = buildSerieBPlayoutBracket(serieBOutcome.playoutParticipants, clubNameById, leagueSystem.season);
+        playout = advancePostseasonForCpu(playout, serieBWorldForRating);
+        playout = finalizePostseason(playout);
+
+        const nextSeasonLabel = `${seasonStartYear + 1}/${String((seasonStartYear + 2) % 100).padStart(2, '0')}`;
+        const transition = advanceLeagueSystemToNextSeason({
+          serieAFinal,
+          serieBFinal,
+          serieBPlayoff: playoff,
+          serieBPlayout: playout,
+          userClubId: userClubId ?? '',
+          userClubProfile,
+          nextSeason: nextSeasonLabel,
+          previousLastPromotedFromSerieC: leagueSystem.lastPromotedFromSerieC,
+        });
+
+        const userNewDivision = transition.summary.userClubDivision;
+        const userNewCompetition = transition.leagueSystem.competitions[userNewDivision];
+        const userNewCalendar = userClubId
+          ? deriveClubMatchCalendar(userNewCompetition.fixtures, userClubId, stadiumFor, getSeasonStartYear(nextSeasonLabel))
+          : [];
+
+        nextLeagueSystem = {
+          ...transition.leagueSystem,
+          competitions: {
+            ...transition.leagueSystem.competitions,
+            [userNewDivision]: { ...userNewCompetition, calendar: userNewCalendar },
+          },
+        };
+
+        setCalendar(userNewCalendar);
+        setStandings(userNewCompetition.standings);
+        if (transition.summary.userClubMovedDivision) {
+          setClubWorld(userNewDivision === 'serie_b' ? createInitialSerieBClubWorld() : createInitialClubWorld());
+        }
+        transition.clubMemories.forEach(addClubMemory);
+        addNewNews(
+          'Cambio stagione: promozioni e retrocessioni',
+          `Serie A: campione ${transition.summary.serieAChampion ?? '-'}. Serie B: campione ${transition.summary.serieBChampion ?? '-'}. Promosse in A: ${transition.summary.promotedToSerieA.map(id => clubNameById.get(id) ?? id).join(', ') || 'nessuna'}. Retrocesse in B: ${transition.summary.relegatedToSerieB.map(id => clubNameById.get(id) ?? id).join(', ') || 'nessuna'}.`,
+          'league'
+        );
+
+        // L1B: conseguenze credibili quando il club utente cambia divisione. Stesso punto sicuro
+        // gia' usato per l'intera transizione di stagione (dentro regularSeasonJustFinished, protetto
+        // da finishMatchInFlightRef): applicato una sola volta, mai due volte dopo F5/doppio click.
+        // Mai licenziamenti/reset rosa/vendite automatiche/downgrade overall.
+        if (transition.summary.userClubMovedDivision) {
+          const consequenceCtx = transition.userClubContext;
+          const preConsequenceBudget = budget + prize + chapterBudgetDelta + loanTransferBudgetDelta;
+          setBudget(Math.max(0, Math.round(preConsequenceBudget * (1 + consequenceCtx.budgetDeltaPercent / 100))));
+          setCareerWorld(current => ({
+            ...current,
+            clubWageBudgetState: {
+              ...current.clubWageBudgetState,
+              annualWageBudget: Math.max(0, Math.round(current.clubWageBudgetState.annualWageBudget * (1 + consequenceCtx.wageBudgetDeltaPercent / 100)))
+            },
+            ownershipState: {
+              ...current.ownershipState,
+              currentObjectives: regenerateObjectivesForDivisionChange(userClubProfile, OBJECTIVE_LABELS[consequenceCtx.objective])
+            }
+          }));
+          addNewNews(
+            consequenceCtx.newTier === 'serie_a' ? 'Il club riparte dalla Serie A' : 'Il club riparte dalla Serie B',
+            `Nuovo obiettivo dichiarato dalla proprietà: ${OBJECTIVE_LABELS[consequenceCtx.objective]}. Budget trasferimenti adattato al nuovo contesto (${consequenceCtx.budgetDeltaPercent > 0 ? '+' : ''}${consequenceCtx.budgetDeltaPercent}%), monte ingaggi ${consequenceCtx.wageBudgetDeltaPercent > 0 ? '+' : ''}${consequenceCtx.wageBudgetDeltaPercent}%.`,
+            'board'
+          );
+        }
+      }
+
+      setLeagueSystem(nextLeagueSystem);
+    }
 
     addNewNews(
       `Risultato: ${teamName} ${scoreUser} - ${scoreOpponent} ${nextMatch.opponent}`,
@@ -1475,11 +2425,29 @@ export default function MatchCenter({
     [...chapterImpact.news, ...(summerImpact?.news ?? [])].forEach(item => {
       addNewNews(item.title, item.content, item.category);
     });
+    emotionalResult.news.forEach(item => addNewNews(item.title, item.content, item.category));
     if (seasonResolution) {
       const finalStanding = rankedStandings.find(item => item.name === teamName);
       addNewNews(
         `Fine stagione: ${teamName} riparte con nuovo status`,
         `${teamName} chiude ${finalStanding?.rank ?? '-'}a con ${finalStanding?.points ?? 0} punti. Il DNA ora pesa di piu su mercato, tifosi e modo in cui i rivali preparano le partite.`,
+        'board'
+      );
+
+      // UI minima riepilogo cambio stagione: aggrega solo dati gia' calcolati sopra dalla pipeline
+      // (nessuna nuova logica), un'unica news compatta invece di una nuova pagina/modale dedicata.
+      const expiringContractsCount = finalPlayersWithContracts.filter(p => p.contract?.status === 'expiring').length;
+      const newTransferBudget = budget + prize + chapterBudgetDelta + loanTransferBudgetDelta;
+      const summaryLines = [
+        `Prestiti rientrati: ${returnedLoanPlayerIds.length}.`,
+        `Riscatti obbligatori eseguiti: ${convertedLoanPlayerIds.length}.`,
+        `Precontratti completati: ${futureContractResult?.newPlayers.length ?? 0}.`,
+        `Contratti in scadenza: ${expiringContractsCount}.`,
+        `Budget trasferimenti nuova stagione: ${formatCurrency(newTransferBudget)}.`
+      ];
+      addNewNews(
+        'Riepilogo cambio stagione',
+        summaryLines.join(' '),
         'board'
       );
     }
@@ -1500,7 +2468,26 @@ export default function MatchCenter({
     if (seasonResolution?.memory) addClubMemory(seasonResolution.memory);
     if (rivalResolution.clubMemory) addClubMemory(rivalResolution.clubMemory);
     [...chapterImpact.memories, ...(summerImpact?.memories ?? [])].forEach(addClubMemory);
+    emotionalResult.memories.forEach(addClubMemory);
     fitnessResolution.news.forEach(item => addNewNews(item.title, item.content, 'training'));
+    developmentResolution.events.forEach(event => {
+      addNewNews(
+        event.kind === 'over_potential' ? `Esplosione inattesa: ${event.playerName}` : `Nuovo ruolo per ${event.playerName}`,
+        event.summary,
+        'training'
+      );
+      addClubMemory({
+        season: CURRENT_SEASON,
+        category: 'youth',
+        title: event.kind === 'over_potential' ? `Esplosione inattesa: ${event.playerName}` : `Conversione di ruolo: ${event.playerName}`,
+        description: event.summary,
+        importance: event.kind === 'over_potential' ? 74 : 58,
+        fanImpact: event.kind === 'over_potential' ? 4 : 1,
+        dressingRoomImpact: 2,
+        tags: ['sviluppo', event.kind, `player:${event.playerName}`],
+        playerNames: [event.playerName]
+      });
+    });
 
     onNavigate('dashboard');
   };
@@ -1530,7 +2517,11 @@ export default function MatchCenter({
   return (
     <div className="page-wrapper">
       {gameState === 'preview' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '24px' }} className="match-layout">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="card-premium pitch-viewer-fallback">
+            La visualizzazione tattica sarà disponibile dopo l'avvio della partita.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '24px' }} className="match-layout">
           <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ borderBottom: '1px solid var(--border-light)', paddingBottom: '10px' }}>
               <h3 style={{ fontSize: '1rem', fontWeight: 800 }}>Confronto Formazioni</h3>
@@ -1712,6 +2703,7 @@ export default function MatchCenter({
               </button>
             </div>
           </div>
+          </div>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: '2.2fr 1.2fr', gap: '24px' }} className="match-layout">
@@ -1779,6 +2771,7 @@ export default function MatchCenter({
             </AnimatePresence>
 
             <LiveTacticalBoard
+              key={nextMatch.id}
               lineup={startingPlayers}
               opponentLineup={opponentStartingPlayers}
               tactic={liveTactic}
@@ -1790,6 +2783,12 @@ export default function MatchCenter({
               opponentName={nextMatch.opponent}
               opponentModule={rivalMemory?.preferredModule ?? '4-3-3'}
               gameState={gameState}
+              matchId={nextMatch.id}
+              events={liveEvents}
+              userBench={benchPlayers}
+              opponentBench={opponentBenchPlayers}
+              userColors={{ primary: userClubProfile.primaryColor ?? '#1E293B', secondary: userClubProfile.secondaryColor ?? '#0F172A' }}
+              opponentColors={{ primary: opponentClub?.primaryColor ?? '#1E293B', secondary: opponentClub?.secondaryColor ?? '#0F172A' }}
             />
 
             <div className="card-premium">

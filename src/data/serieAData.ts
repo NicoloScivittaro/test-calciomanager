@@ -1210,7 +1210,7 @@ export const SCOUTED_TARGETS: Negotiation[] = [
     offeredWage: 0,
     offeredContractYears: 0,
     probability: 38,
-    status: 'pending',
+    status: 'draft',
     timeline: ['Profilo top per la fascia sinistra.', 'Il Tottenham chiede una cifra importante.']
   },
   {
@@ -1224,7 +1224,7 @@ export const SCOUTED_TARGETS: Negotiation[] = [
     offeredWage: 0,
     offeredContractYears: 0,
     probability: 52,
-    status: 'pending',
+    status: 'draft',
     timeline: ['Difensore italiano di prospettiva enorme.', 'Atalanta vende solo davanti a offerte forti.']
   },
   {
@@ -1238,7 +1238,7 @@ export const SCOUTED_TARGETS: Negotiation[] = [
     offeredWage: 0,
     offeredContractYears: 0,
     probability: 45,
-    status: 'pending',
+    status: 'draft',
     timeline: ['Talento creativo seguito da mezza Europa.', 'Como vuole trattenerlo dopo la stagione storica.']
   },
   {
@@ -1252,7 +1252,7 @@ export const SCOUTED_TARGETS: Negotiation[] = [
     offeredWage: 0,
     offeredContractYears: 0,
     probability: 66,
-    status: 'pending',
+    status: 'draft',
     timeline: ['Centrocampista completo e già pronto.', 'Bologna ascolta offerte solo sopra valutazione.']
   },
   {
@@ -1266,7 +1266,7 @@ export const SCOUTED_TARGETS: Negotiation[] = [
     offeredWage: 0,
     offeredContractYears: 0,
     probability: 34,
-    status: 'pending',
+    status: 'draft',
     timeline: ['Esterno fisico, perfetto per sistemi aggressivi.', 'Operazione complessa per ingaggio e concorrenza.']
   },
   {
@@ -1280,7 +1280,7 @@ export const SCOUTED_TARGETS: Negotiation[] = [
     offeredWage: 0,
     offeredContractYears: 0,
     probability: 58,
-    status: 'pending',
+    status: 'draft',
     timeline: ['Attaccante giovane con margine enorme.', 'Inter preferirebbe prestito o recompra.']
   }
 ];

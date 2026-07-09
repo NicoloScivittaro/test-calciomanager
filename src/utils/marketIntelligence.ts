@@ -1,5 +1,7 @@
-import { AgentStyle, ClubAIState, ContractPromiseType, Negotiation, Player, ScoutingCertainty, TeamDNAState, TransferClauseType } from '../types';
+import { AgentStyle, ClubAIState, ClubHistoryState, ClubWageBudgetState, ContractPromiseType, Negotiation, NegotiationStatus, Player, ScoutingCertainty, Tactic, TeamDNAState, TransferClauseType } from '../types';
 import { getDNAMarketAdjustment } from './teamDNA';
+import { getRoleFitScore, POSITION_PRESETS } from './tacticsEngine';
+import { toAnnualSalary } from './playerContracts';
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -19,17 +21,23 @@ export const getRealPlayerForTarget = (target: Negotiation, world: ClubAIState[]
   return sourceClub?.roster.find(player => player.name === target.playerName);
 };
 
-const buildPotentialRange = (target: Negotiation, realPlayer?: Player): [number, number] => {
+// scoutQuality (0-100, 60 = neutro) restringe solo l'ampiezza della forbice di incertezza gia'
+// esistente: un capo scout migliore rende il range piu' stretto e affidabile, uno scarso lo
+// allarga leggermente. Non scopre mai il potenziale reale ne' salta livelli di scouting.
+const buildPotentialRange = (target: Negotiation, realPlayer?: Player, scoutQuality = 60): [number, number] => {
+  // 60 = capo scout neutro: fattore 1, comportamento identico a prima dell'introduzione dello staff.
+  const precisionFactor = clamp(1 + (60 - scoutQuality) / 150, 0.6, 1.3);
   if (realPlayer) {
-    const uncertainty = realPlayer.age <= 22 ? 5 : realPlayer.age <= 25 ? 3 : 1;
+    const uncertainty = (realPlayer.age <= 22 ? 5 : realPlayer.age <= 25 ? 3 : 1) * precisionFactor;
     return [
-      Math.max(realPlayer.overall, realPlayer.potential - uncertainty),
-      Math.min(94, realPlayer.potential + Math.max(1, Math.round(uncertainty / 2)))
+      Math.max(realPlayer.overall, Math.round(realPlayer.potential - uncertainty)),
+      Math.min(94, Math.round(realPlayer.potential + Math.max(1, uncertainty / 2)))
     ];
   }
   const estimated = Math.round(70 + Math.log10(Math.max(target.value, 1000000) / 1000000) * 7.2);
-  const youngBias = target.value <= 25000000 ? 7 : 4;
-  return [Math.max(66, estimated - 3), Math.min(92, estimated + youngBias)];
+  const youngBias = (target.value <= 25000000 ? 7 : 4) * precisionFactor;
+  const lowSpread = 3 * precisionFactor;
+  return [Math.max(66, Math.round(estimated - lowSpread)), Math.min(92, Math.round(estimated + youngBias))];
 };
 
 const inferHiddenRisk = (target: Negotiation, realPlayer?: Player): Negotiation['hiddenRisk'] => {
@@ -47,6 +55,44 @@ const getScoutingCertainty = (level: number): ScoutingCertainty => {
   if (level >= 3) return 'Alta';
   if (level >= 2) return 'Media';
   return 'Bassa';
+};
+
+const VALID_NEGOTIATION_STATUSES = new Set<string>([
+  'draft', 'club_offer_sent', 'club_offer_rejected', 'club_counter_offer', 'club_offer_accepted',
+  'player_contract_negotiation', 'player_contract_rejected', 'player_counter_offer',
+  'completed', 'withdrawn', 'expired'
+]);
+
+// Migra gli stati del vecchio flusso a un solo scatto (pending/accepted/rejected) verso i nuovi
+// stati a due fasi: nessun salvataggio resta bloccato su uno stato che il nuovo Market non conosce.
+const migrateNegotiationStatus = (raw: unknown): NegotiationStatus => {
+  if (typeof raw === 'string' && VALID_NEGOTIATION_STATUSES.has(raw)) return raw as NegotiationStatus;
+  if (raw === 'pending') return 'draft';
+  if (raw === 'accepted') return 'completed';
+  if (raw === 'rejected') return 'club_offer_rejected';
+  return 'draft';
+};
+
+export const NEGOTIATION_STATUS_LABELS: Record<NegotiationStatus, string> = {
+  draft: 'Obiettivo osservato',
+  club_offer_sent: 'Offerta al club',
+  club_offer_rejected: 'Trattativa fallita',
+  club_counter_offer: 'Controproposta club',
+  club_offer_accepted: 'Accordo con club',
+  player_contract_negotiation: 'Contratto da negoziare',
+  player_contract_rejected: 'Trattativa fallita',
+  player_counter_offer: 'Controproposta del giocatore',
+  // Mercato M3: dopo l'accordo col giocatore, prima dell'ingresso in rosa.
+  player_contract_accepted: 'Accordo raggiunto',
+  medical_pending: 'In attesa visite mediche',
+  medical_warning: 'Rischio medico da valutare',
+  medical_failed: 'Visite non superate',
+  registration_pending: 'Registrazione in corso',
+  registration_failed: 'Registrazione fallita',
+  suspended_window_closed: 'Mercato chiuso',
+  completed: 'Completata',
+  withdrawn: 'Ritirata',
+  expired: 'Offerta scaduta'
 };
 
 export const normalizeNegotiation = (
@@ -70,6 +116,7 @@ export const normalizeNegotiation = (
 
   return {
     ...target,
+    status: migrateNegotiationStatus(target.status),
     baseValue,
     value: rumoredValue,
     scoutLevel,
@@ -105,6 +152,13 @@ export const normalizeNegotiations = (
   world: ClubAIState[]
 ) => targets.map(target => normalizeNegotiation(target, teamDNA, world));
 
+// Livello di affidabilita' leggibile dello scouting gia' esistente (basato su scoutLevel, non un dato nuovo).
+export const getScoutReliabilityLabel = (scoutLevel: number): string => (
+  scoutLevel >= 4 ? 'Relazione approfondita' :
+  scoutLevel >= 2 ? 'Analisi discreta' :
+  'Osservazione iniziale'
+);
+
 export const getVisibleScoutingReport = (target: Negotiation) => {
   const scoutLevel = target.scoutLevel ?? 0;
   const certainty = target.scoutCertainty ?? getScoutingCertainty(scoutLevel);
@@ -135,12 +189,13 @@ export const advanceScouting = (
   target: Negotiation,
   realPlayer: Player | undefined,
   teamDNA: TeamDNAState,
-  world: ClubAIState[]
+  world: ClubAIState[],
+  scoutQuality = 60
 ) => {
   const normalized = normalizeNegotiation(target, teamDNA, world);
   const nextLevel = clamp((normalized.scoutLevel ?? 0) + 1, 0, 4);
   const tacticalFit = realPlayer ? getDNAMarketAdjustment(realPlayer, teamDNA).fit : normalized.tacticalFit ?? 55;
-  const potentialRange = buildPotentialRange(normalized, realPlayer);
+  const potentialRange = buildPotentialRange(normalized, realPlayer, scoutQuality);
   const hiddenRisk = inferHiddenRisk(normalized, realPlayer);
   const nextRumorLevel = clamp((normalized.rumorLevel ?? 0) + (nextLevel >= 3 ? 7 : 4), 0, 100);
   const baseValue = normalized.baseValue ?? normalized.value;
@@ -180,6 +235,113 @@ export const getClauseLabel = (clause: TransferClauseType) => {
     default:
       return 'Nessuna clausola';
   }
+};
+
+// ─── "Trova il giocatore perfetto": punteggio spiegabile da soli dati reali gia' esistenti ───
+
+export interface MarketFitContext {
+  tactic: Tactic | null;
+  teamDNA: TeamDNAState;
+  players: Player[]; // rosa prima squadra attuale, per la necessita di reparto
+  starters: string[];
+  transferBudget: number;
+  wageBudget: ClubWageBudgetState;
+  clubHistory: ClubHistoryState;
+  scouting?: Negotiation; // se il profilo e' gia' stato osservato/scoutato
+}
+
+export type MarketFitLabel = 'Perfetto per il progetto' | 'Ottima opzione' | 'Compatibile' | 'Da valutare' | 'Poco adatto';
+
+export interface MarketFitResult {
+  score: number; // 0-100
+  label: MarketFitLabel;
+  reasons: string[]; // max 3, solo motivi reali
+}
+
+const roleFamilyOf = (role: string) => (
+  role === 'GK' ? 'GK' : /CB|LB|RB/.test(role) ? 'DF' : /DM|CM|AM/.test(role) ? 'MF' : 'FW'
+);
+
+export const getMarketFitScore = (player: Player, context: MarketFitContext): MarketFitResult => {
+  const scoutLevel = context.scouting?.scoutLevel ?? 0;
+  const reasons: { text: string; weight: number }[] = [];
+
+  // Compatibilita ruolo/modulo: riusa la stessa matrice di fit gia' usata in Tactics.
+  const slots = context.tactic ? POSITION_PRESETS[context.tactic.module] : undefined;
+  const roleFit = slots?.length
+    ? Math.max(...slots.map(slot => getRoleFitScore(player.role, slot.role)))
+    : (player.role ? 0.6 : 0.5);
+  if (roleFit >= 0.85) reasons.push({ text: 'Copre in pieno un ruolo chiave del modulo attuale.', weight: 3 });
+  else if (roleFit >= 0.6) reasons.push({ text: 'Compatibile con il modulo e la tattica attuale.', weight: 2 });
+
+  // Necessita di reparto: quanti giocatori reali coprono gia' lo stesso reparto in rosa.
+  const sameFamilyCount = context.players.filter(p => roleFamilyOf(p.role) === roleFamilyOf(player.role)).length;
+  const squadNeed = sameFamilyCount <= 3 ? 1 : sameFamilyCount <= 5 ? 0.6 : 0.3;
+  if (sameFamilyCount <= 3) reasons.push({ text: 'Copre un reparto in rosa con poche alternative reali.', weight: 3 });
+
+  // DNA fit: riusa la stessa funzione gia' usata per il mercato normale.
+  const dnaMarket = getDNAMarketAdjustment(player, context.teamDNA);
+  const dnaScore = clamp(dnaMarket.fit, 0, 100) / 100;
+  if (dnaMarket.fit >= 72) reasons.push({ text: 'Profilo coerente con il DNA e l\'identita della squadra.', weight: 2 });
+
+  // Eta: picco 23-29, penalizza estremi.
+  const ageScore = player.age <= 20 ? 0.55 : player.age <= 29 ? 1 : player.age <= 32 ? 0.7 : 0.4;
+
+  // Overall reale (sempre visibile) + potenziale solo se scoutato a sufficienza.
+  const overallScore = clamp((player.overall - 60) / 30, 0, 1);
+  const potentialKnown = scoutLevel >= 2 && Boolean(context.scouting?.potentialRange);
+  const potentialScore = potentialKnown
+    ? clamp(((context.scouting!.potentialRange![0] + context.scouting!.potentialRange![1]) / 2 - 60) / 30, 0, 1)
+    : 0.5;
+
+  // Sostenibilita economica: cartellino vs budget trasferimenti, stipendio vs margine stipendi.
+  const estimatedFee = context.scouting?.value ?? player.value;
+  const feeRatio = context.transferBudget > 0 ? clamp(estimatedFee / context.transferBudget, 0, 3) : 1.5;
+  const transferAffordable = feeRatio <= 1;
+  const annualSalary = toAnnualSalary(player.wage);
+  const wageAffordable = annualSalary <= context.wageBudget.availableAnnualWages;
+  const budgetScore = (transferAffordable ? 0.55 : clamp(1 - (feeRatio - 1) * 0.4, 0, 0.55))
+    + (wageAffordable ? 0.45 : 0.1);
+  if (transferAffordable && wageAffordable) reasons.push({ text: 'Costo cartellino e stipendio sostenibili per il budget attuale.', weight: 2 });
+  else if (!wageAffordable) reasons.push({ text: 'Profilo interessante, ma stipendio fuori dal margine attuale.', weight: -2 });
+  else if (!transferAffordable) reasons.push({ text: 'Cartellino oltre il budget trasferimenti disponibile.', weight: -2 });
+
+  // Contratto in scadenza: piu' facile da trattare, segnale reale gia' presente sul giocatore.
+  if (player.contractYears <= 1) reasons.push({ text: 'Contratto vicino alla scadenza: trattativa piu abbordabile.', weight: 1 });
+
+  // Rischio fisico solo se davvero scoutato.
+  const riskKnown = scoutLevel >= 4 && context.scouting?.hiddenRisk && context.scouting.hiddenRisk !== 'Nessuno';
+  if (riskKnown) reasons.push({ text: `Rischio noto dallo scouting: ${context.scouting!.hiddenRisk!.toLowerCase()}.`, weight: -1 });
+
+  // Rivalita: solo come warning, mai come blocco al punteggio.
+  const rivalClub = context.clubHistory.rivalries.find(r => r.heat >= 55 && r.opponent === context.scouting?.rivalClub);
+  if (rivalClub) {
+    reasons.push({ text: `Acquisto delicato: interesse concreto anche del ${rivalClub.opponent}, rivale diretto.`, weight: -1 });
+  }
+
+  const weighted =
+    roleFit * 22
+    + squadNeed * 14
+    + dnaScore * 18
+    + ageScore * 12
+    + overallScore * 16
+    + potentialScore * 10
+    + budgetScore * 8;
+  const score = Math.round(clamp(weighted, 0, 100));
+
+  const label: MarketFitLabel =
+    score >= 82 ? 'Perfetto per il progetto' :
+    score >= 68 ? 'Ottima opzione' :
+    score >= 52 ? 'Compatibile' :
+    score >= 36 ? 'Da valutare' :
+    'Poco adatto';
+
+  const topReasons = reasons
+    .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))
+    .slice(0, 3)
+    .map(r => r.text);
+
+  return { score, label, reasons: topReasons };
 };
 
 export const getPromiseLabel = (promise: ContractPromiseType) => {

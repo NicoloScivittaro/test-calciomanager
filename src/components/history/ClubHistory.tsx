@@ -13,11 +13,13 @@ import {
   Trophy,
   Users
 } from 'lucide-react';
-import { ClubHistoryEntry, ClubHistoryState, ClubProfile, Player, TeamDNAState, SeasonNarrativeState, Standing } from '../../types';
+import { ClubHistoryEntry, ClubHistoryState, ClubProfile, Player, TeamDNAState, SeasonNarrativeState, Standing, EmotionalNarrativeState, LeagueSystemState } from '../../types';
 import TeamLogo from '../common/TeamLogo';
 import { TEAM_DNA_DEFINITIONS } from '../../utils/teamDNA';
 import { SEASON_CHAPTERS } from '../../utils/seasonNarrative';
 import { buildManagerLegacySnapshot } from '../../utils/managerLegacy';
+import { NARRATIVE_TYPE_LABELS } from '../../utils/emotionalNarratives';
+import { RIVALRY_STATUS_LABELS, RIVALRY_TYPE_LABELS } from '../../utils/clubHistory';
 
 interface ClubHistoryProps {
   history: ClubHistoryState;
@@ -27,6 +29,8 @@ interface ClubHistoryProps {
   teamDNA: TeamDNAState;
   seasonNarrative: SeasonNarrativeState;
   standings: Standing[];
+  emotionalNarratives: EmotionalNarrativeState;
+  leagueSystem: LeagueSystemState | null;
 }
 
 const formatImpact = (value: number) => `${Math.round(value)}/100`;
@@ -96,7 +100,8 @@ function HistorySection({
   );
 }
 
-export default function ClubHistory({ history, teamName, clubProfile, players, teamDNA, seasonNarrative, standings }: ClubHistoryProps) {
+export default function ClubHistory({ history, teamName, clubProfile, players, teamDNA, seasonNarrative, standings, emotionalNarratives, leagueSystem }: ClubHistoryProps) {
+  const currentDivision = leagueSystem ? (leagueSystem.clubCompetitionMap[clubProfile.id] ?? 'serie_a') : (clubProfile.division ?? 'serie_a');
   const topMorale = [...players].sort((a, b) => b.morale - a.morale)[0];
   const youngCore = players.filter(player => player.age <= 23).length;
   const latestMemories = history.memories.slice(0, 9);
@@ -119,6 +124,10 @@ export default function ClubHistory({ history, teamName, clubProfile, players, t
     })
     .slice(0, 4);
   const legacy = buildManagerLegacySnapshot(history, players, standings, teamName, teamDNA);
+  const emotionalStories = [...(emotionalNarratives?.narratives ?? [])]
+    .filter(narrative => narrative.status !== 'conclusa')
+    .sort((a, b) => b.importance - a.importance)
+    .slice(0, 6);
 
   return (
     <div className="page-wrapper">
@@ -142,7 +151,9 @@ export default function ClubHistory({ history, teamName, clubProfile, players, t
           <div style={{ display: 'flex', gap: '16px', alignItems: 'center', minWidth: 0 }}>
             <TeamLogo club={clubProfile} size={70} rounded={16} highlighted />
             <div style={{ minWidth: 0 }}>
-              <span className="selection-kicker">Memoria carriera</span>
+              <span className="selection-kicker">
+                Memoria carriera · {currentDivision === 'serie_a' ? 'Serie A' : 'Serie B'}
+              </span>
               <h2 style={{ fontSize: '1.8rem', lineHeight: 1.05, marginTop: '4px' }}>Storia del Club</h2>
               <p style={{ color: 'var(--text-secondary)', lineHeight: 1.45, marginTop: '8px' }}>
                 {teamName} non dimentica: risultati, mercato, giovani, ferite e rivalita restano nella carriera.
@@ -408,7 +419,7 @@ export default function ClubHistory({ history, teamName, clubProfile, players, t
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', lineHeight: 1.5 }}>Nessuna rivalita viva: derby tesi, gare sporche o trasferimenti delicati la faranno nascere.</p>
               ) : (
                 history.rivalries.slice(0, 3).map(rivalry => (
-                  <div key={rivalry.id} style={{ marginBottom: '10px' }}>
+                  <div key={rivalry.id} style={{ marginBottom: '12px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', fontWeight: 800 }}>
                       <span>{rivalry.opponent}</span>
                       <span style={{ color: metricColor(rivalry.heat) }}>{Math.round(rivalry.heat)}%</span>
@@ -416,7 +427,23 @@ export default function ClubHistory({ history, teamName, clubProfile, players, t
                     <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.08)', marginTop: '5px', overflow: 'hidden' }}>
                       <div style={{ height: '100%', width: `${rivalry.heat}%`, background: 'var(--color-danger)' }} />
                     </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '5px' }}>
+                      <span>{RIVALRY_TYPE_LABELS[rivalry.type]} · {RIVALRY_STATUS_LABELS[rivalry.status]}</span>
+                      <span>Rispetto {Math.round(rivalry.respect)}%</span>
+                    </div>
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.7rem', marginTop: '5px' }}>{rivalry.reason}</p>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.66rem', marginTop: '3px' }}>
+                      Bilancio: {rivalry.wins}V {rivalry.draws}N {rivalry.losses}P · Nata: {rivalry.startedAt}
+                      {rivalry.lastMeetingResult && ` · Ultimo scontro: ${rivalry.lastMeetingResult} (${rivalry.lastMeetingSeason})`}
+                    </p>
+                    {rivalry.memories.slice(0, 3).map((event, index) => (
+                      <p key={index} style={{ color: 'var(--text-secondary)', fontSize: '0.66rem', marginTop: '3px', lineHeight: 1.3 }}>• {event}</p>
+                    ))}
+                    {rivalry.exPlayersInvolved.length > 0 && (
+                      <p style={{ color: 'var(--text-muted)', fontSize: '0.66rem', marginTop: '3px' }}>
+                        Ex coinvolti: {rivalry.exPlayersInvolved.join(', ')}
+                      </p>
+                    )}
                   </div>
                 ))
               )}
@@ -455,6 +482,44 @@ export default function ClubHistory({ history, teamName, clubProfile, players, t
           <HistorySection title="Affari redditizi" icon={Medal} items={history.profitableDeals ?? []} empty="Le vendite sopra valore e sostenibili diventeranno patrimonio della societa." tone="var(--color-pitch)" />
           <HistorySection title="Ritorni emozionanti" icon={BookOpen} items={history.emotionalReturns ?? []} empty="Un ex simbolo tornato a casa potra accendere nostalgia o rimpianto." tone="var(--color-gold)" />
           <HistorySection title="Acquisti nuova era" icon={Sparkles} items={history.newEraSignings ?? []} empty="I colpi che cambiano ambizione e identita del club finiranno qui." tone="var(--color-gold)" />
+
+          <div className="card-premium" style={{ padding: '16px', minHeight: '220px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <Flame size={17} style={{ color: '#FB7185' }} />
+              <h3 style={{ fontSize: '0.92rem', fontWeight: 850 }}>Storie e partite iconiche</h3>
+            </div>
+            {emotionalStories.length === 0 ? (
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', lineHeight: 1.55 }}>
+                Favole a sorpresa, sconfitte eroiche, eroi inattesi e riscatti: quando nasceranno, resteranno qui.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {emotionalStories.map(story => (
+                  <div
+                    key={story.id}
+                    style={{
+                      border: '1px solid var(--border-light)',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'rgba(26, 33, 42, 0.28)',
+                      padding: '10px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'baseline' }}>
+                      <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#FB7185', textTransform: 'uppercase' }}>
+                        {NARRATIVE_TYPE_LABELS[story.type]}
+                      </span>
+                      <span style={{ color: '#FB7185', fontSize: '0.68rem', fontWeight: 850 }}>{formatImpact(story.importance)}</span>
+                    </div>
+                    <strong style={{ fontSize: '0.8rem', lineHeight: 1.35 }}>{story.title}</strong>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.72rem', lineHeight: 1.42, marginTop: '4px' }}>{story.description}</p>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', display: 'block', marginTop: '6px' }}>
+                      {story.playerName ?? story.club} · {story.stage} · {story.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </motion.div>
     </div>

@@ -1,15 +1,5 @@
 import { ClubAIState, MatchEvent, MatchStats, Player, PlayerRecentFormToken, PlayerRole, PlayerSeasonStat } from '../types';
 
-const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-
-const hashNumber = (value: string) => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-};
-
 const roleGoalBias: Record<PlayerRole, number> = {
   GK: 0,
   CB: 0.14,
@@ -36,38 +26,19 @@ const roleAssistBias: Record<PlayerRole, number> = {
   ST: 0.42
 };
 
-const buildInitialRecentForm = (goals: number, assists: number, seed: number): PlayerRecentFormToken[] => {
-  const form: PlayerRecentFormToken[] = [];
-  const size = 5;
-  for (let i = 0; i < size; i += 1) {
-    if (i === 0 && goals > 0 && assists > 0 && seed % 7 === 0) form.push('GA');
-    else if (i < goals && seed % 3 !== 0) form.push('G');
-    else if (i < assists && seed % 4 !== 1) form.push('A');
-    else form.push('-');
-  }
-  return form;
-};
-
-const getPlayerSeedStats = (player: Player, clubName: string): PlayerSeasonStat => {
-  const seed = hashNumber(`${clubName}-${player.id}-${player.name}`);
-  const quality = clamp((player.overall - 70) / 18, 0, 1.4);
-  const apps = clamp(1 + (seed % 4) + Math.round(quality * 1.4), 1, 6);
-  const goals = Math.floor((quality * 2.2 + (seed % 5) * 0.18) * roleGoalBias[player.role]);
-  const assists = Math.floor((quality * 2.1 + ((seed >> 3) % 5) * 0.16) * roleAssistBias[player.role]);
-  const chancesCreated = Math.round(assists * 2.4 + roleAssistBias[player.role] * (2 + (seed % 4)));
-
-  return {
-    playerId: player.id,
-    playerName: player.name,
-    clubName,
-    role: player.role,
-    appearances: apps,
-    goals: clamp(goals, 0, apps + 1),
-    assists: clamp(assists, 0, apps + 1),
-    chancesCreated: clamp(chancesCreated, 0, 20),
-    recentForm: buildInitialRecentForm(goals, assists, seed)
-  };
-};
+const getPlayerSeedStats = (player: Player, clubName: string): PlayerSeasonStat => ({
+  playerId: player.id,
+  playerName: player.name,
+  clubName,
+  role: player.role,
+  appearances: 0,
+  goals: 0,
+  assists: 0,
+  chancesCreated: 0,
+  averageRating: 0,
+  minutesPlayed: 0,
+  recentForm: []
+});
 
 export const createInitialPlayerSeasonStats = (
   userTeamName: string,
@@ -111,6 +82,8 @@ export const normalizePlayerSeasonStats = (
         goals: Number(row.goals ?? fallbackRow.goals),
         assists: Number(row.assists ?? fallbackRow.assists),
         chancesCreated: Number(row.chancesCreated ?? fallbackRow.chancesCreated),
+        averageRating: Number(row.averageRating ?? fallbackRow.averageRating),
+        minutesPlayed: Number(row.minutesPlayed ?? fallbackRow.minutesPlayed),
         recentForm: Array.isArray(row.recentForm) ? row.recentForm.slice(0, 5) as PlayerRecentFormToken[] : fallbackRow.recentForm
       };
     });
@@ -163,6 +136,8 @@ export const syncPlayerSeasonStatsRosters = (
       goals: 0,
       assists: 0,
       chancesCreated: 0,
+      averageRating: 0,
+      minutesPlayed: 0,
       recentForm: []
     });
   });
@@ -179,6 +154,8 @@ interface ApplyMatchStatsContext {
   playedOpponentIds: string[];
   events: MatchEvent[];
   stats: MatchStats;
+  ratings?: Record<string, number>;
+  userMatchMinutes?: Record<string, number>;
 }
 
 export const applyMatchToPlayerSeasonStats = (
@@ -212,6 +189,8 @@ export const applyMatchToPlayerSeasonStats = (
       goals: 0,
       assists: 0,
       chancesCreated: 0,
+      averageRating: 0,
+      minutesPlayed: 0,
       recentForm: []
     };
     next.set(playerId, row);
@@ -241,6 +220,14 @@ export const applyMatchToPlayerSeasonStats = (
     }
   });
 
+  let userGoals = 0;
+  let opponentGoals = 0;
+  context.events.forEach(event => {
+    if (event.type !== 'goal' || !event.playerId) return;
+    if (playersById.get(event.playerId)?.clubName === context.userTeamName) userGoals += 1;
+    else opponentGoals += 1;
+  });
+
   const playedIds = Array.from(new Set([...context.playedUserIds, ...context.playedOpponentIds]));
   playedIds.forEach(playerId => {
     const row = ensureRow(playerId);
@@ -252,13 +239,115 @@ export const applyMatchToPlayerSeasonStats = (
       playerContribution.assists > 0 ? 'A' :
       '-';
 
+    const isUserPlayer = row.clubName === context.userTeamName;
+    const resultModifier = userGoals === opponentGoals ? 0 : (isUserPlayer ? (userGoals > opponentGoals ? 0.15 : -0.15) : (opponentGoals > userGoals ? 0.15 : -0.15));
+    const fallbackRating = clamp(6 + playerContribution.goals * 0.9 + playerContribution.assists * 0.5 + resultModifier, 4.5, 9.5);
+    const matchRating = context.ratings?.[playerId] ?? fallbackRating;
+
+    const minutesThisMatch = isUserPlayer ? (context.userMatchMinutes?.[playerId] ?? 90) : 90;
+
     row.appearances += 1;
     row.goals += playerContribution.goals;
     row.assists += playerContribution.assists;
     row.chancesCreated += playerContribution.chances;
+    row.averageRating = Number((((row.averageRating || 6) * (row.appearances - 1) + matchRating) / row.appearances).toFixed(2));
+    row.minutesPlayed = (row.minutesPlayed || 0) + minutesThisMatch;
     row.recentForm = [token, ...row.recentForm].slice(0, 5);
   });
 
+  return Array.from(next.values());
+};
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const pickWeightedIndex = (weights: number[]) => {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (total <= 0) return Math.floor(Math.random() * weights.length);
+  let roll = Math.random() * total;
+  for (let i = 0; i < weights.length; i += 1) {
+    roll -= weights[i];
+    if (roll <= 0) return i;
+  }
+  return weights.length - 1;
+};
+
+interface SimulatedClubFixture {
+  clubName: string;
+  roster: Player[];
+  goalsScored: number;
+}
+
+const applyClubRoundResult = (
+  next: Map<string, PlayerSeasonStat>,
+  fixture: SimulatedClubFixture
+) => {
+  const startingXI = [...fixture.roster].sort((a, b) => b.overall - a.overall).slice(0, 11);
+  if (startingXI.length === 0) return;
+
+  const contribution = new Map<string, { goals: number; assists: number; chances: number }>();
+  const addContribution = (playerId: string, key: 'goals' | 'assists' | 'chances', amount = 1) => {
+    const current = contribution.get(playerId) ?? { goals: 0, assists: 0, chances: 0 };
+    current[key] += amount;
+    contribution.set(playerId, current);
+  };
+
+  for (let goal = 0; goal < fixture.goalsScored; goal += 1) {
+    const scorer = startingXI[pickWeightedIndex(startingXI.map(player => roleGoalBias[player.role] || 0.02))];
+    addContribution(scorer.id, 'goals');
+
+    if (Math.random() < 0.72) {
+      const assistCandidates = startingXI.filter(player => player.id !== scorer.id);
+      if (assistCandidates.length > 0) {
+        const assister = assistCandidates[pickWeightedIndex(assistCandidates.map(player => roleAssistBias[player.role] || 0.05))];
+        addContribution(assister.id, 'assists');
+        addContribution(assister.id, 'chances', 2);
+      }
+    }
+  }
+
+  startingXI.forEach(player => {
+    const existing = next.get(player.id);
+    const row: PlayerSeasonStat = existing ?? {
+      playerId: player.id,
+      playerName: player.name,
+      clubName: fixture.clubName,
+      role: player.role,
+      appearances: 0,
+      goals: 0,
+      assists: 0,
+      chancesCreated: 0,
+      averageRating: 0,
+      minutesPlayed: 0,
+      recentForm: []
+    };
+    const playerContribution = contribution.get(player.id) ?? { goals: 0, assists: 0, chances: 0 };
+    const token: PlayerRecentFormToken =
+      playerContribution.goals > 0 && playerContribution.assists > 0 ? 'GA' :
+      playerContribution.goals > 0 ? 'G' :
+      playerContribution.assists > 0 ? 'A' :
+      '-';
+    const matchRating = clamp(6 + playerContribution.goals * 0.9 + playerContribution.assists * 0.5 + (Math.random() * 0.6 - 0.3), 4.5, 9.5);
+
+    row.playerName = player.name;
+    row.clubName = fixture.clubName;
+    row.role = player.role;
+    row.appearances += 1;
+    row.goals += playerContribution.goals;
+    row.assists += playerContribution.assists;
+    row.chancesCreated += playerContribution.chances;
+    row.averageRating = Number((((row.averageRating || 6) * (row.appearances - 1) + matchRating) / row.appearances).toFixed(2));
+    row.minutesPlayed = (row.minutesPlayed || 0) + 90;
+    row.recentForm = [token, ...row.recentForm].slice(0, 5);
+    next.set(player.id, row);
+  });
+};
+
+export const applySimulatedRoundToPlayerSeasonStats = (
+  currentStats: PlayerSeasonStat[],
+  fixtures: SimulatedClubFixture[]
+): PlayerSeasonStat[] => {
+  const next = new Map(currentStats.map(row => [row.playerId, { ...row, recentForm: [...row.recentForm] }]));
+  fixtures.forEach(fixture => applyClubRoundResult(next, fixture));
   return Array.from(next.values());
 };
 

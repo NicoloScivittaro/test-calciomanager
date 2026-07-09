@@ -1,10 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, Info, Save, Sparkles, UserCheck, Shield, Zap } from 'lucide-react';
-import { Player, Tactic, TeamDNAState } from '../../types';
-import { evaluateTactic, getRoleFitScore } from '../../utils/tacticsEngine';
+import { Player, PlayerInstructionRole, SlotInstruction, Tactic, TeamDNAState } from '../../types';
+import {
+  applyInstructionPreset,
+  evaluatePlayerInstructionFit,
+  evaluateTactic,
+  FormationTacticalModifiers,
+  getDefaultSlotInstructions,
+  getFormationCompatibilityReport,
+  getRoleFitScore,
+  INSTRUCTION_PRESET_LABELS,
+  InstructionPresetId,
+  mergeSlotInstructionsForModule,
+  PLAYER_INSTRUCTION_ROLE_META,
+  POSITION_PRESETS,
+  FORMATION_LIBRARY
+} from '../../utils/tacticsEngine';
 import { selectBestLineupForModule } from '../../utils/squadSelection';
 import { getTacticalDNAAlignment, TEAM_DNA_DEFINITIONS } from '../../utils/teamDNA';
+import { getPlayerAvailabilitySummary } from '../../utils/playerFitness';
+import { getRoleFamiliarityEntry, ROLE_FAMILIARITY_STATUS_LABELS } from '../../utils/playerDevelopment';
 import PlayerProfileModal from '../common/PlayerProfileModal';
 
 interface TacticsProps {
@@ -18,14 +34,8 @@ interface TacticsProps {
   teamDNA: TeamDNAState;
 }
 
-interface PitchPosition {
-  x: number; // percent from left
-  y: number; // percent from top
-  role: string;
-}
-
 export default function Tactics({ players, tactic, saveTactic, starters, setStarters, bench, setBench, teamDNA }: TacticsProps) {
-  const [module, setModule] = useState<'4-3-3' | '4-2-3-1' | '3-5-2'>(tactic.module);
+  const [module, setModule] = useState<Tactic['module']>(tactic.module);
   const [mentality, setMentality] = useState<'Difensiva' | 'Bilanciata' | 'Offensiva'>(tactic.mentality);
   const [pressing, setPressing] = useState(tactic.pressing);
   const [tempo, setTempo] = useState(tactic.tempo);
@@ -48,55 +58,40 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
   const [swappingStarterIndex, setSwappingStarterIndex] = useState<number | null>(null);
   const [playerSheet, setPlayerSheet] = useState<{ player: Player; mode: 'quick' | 'full' } | null>(null);
 
-  // Position presets
-  const positionPresets: Record<'4-3-3' | '4-2-3-1' | '3-5-2', PitchPosition[]> = {
-    '4-3-3': [
-      { x: 50, y: 88, role: 'GK' },
-      { x: 35, y: 72, role: 'CB' },
-      { x: 65, y: 72, role: 'CB' },
-      { x: 15, y: 66, role: 'LB' },
-      { x: 85, y: 66, role: 'RB' },
-      { x: 50, y: 55, role: 'DM' },
-      { x: 32, y: 44, role: 'CM' },
-      { x: 68, y: 44, role: 'CM' },
-      { x: 20, y: 22, role: 'LW' },
-      { x: 80, y: 22, role: 'RW' },
-      { x: 50, y: 14, role: 'ST' }
-    ],
-    '4-2-3-1': [
-      { x: 50, y: 88, role: 'GK' },
-      { x: 35, y: 72, role: 'CB' },
-      { x: 65, y: 72, role: 'CB' },
-      { x: 15, y: 66, role: 'LB' },
-      { x: 85, y: 66, role: 'RB' },
-      { x: 38, y: 56, role: 'DM' },
-      { x: 62, y: 56, role: 'DM' },
-      { x: 50, y: 38, role: 'AM' },
-      { x: 20, y: 22, role: 'LW' },
-      { x: 80, y: 22, role: 'RW' },
-      { x: 50, y: 14, role: 'ST' }
-    ],
-    '3-5-2': [
-      { x: 50, y: 88, role: 'GK' },
-      { x: 50, y: 74, role: 'CB' },
-      { x: 28, y: 72, role: 'CB' },
-      { x: 72, y: 72, role: 'CB' },
-      { x: 50, y: 54, role: 'DM' },
-      { x: 32, y: 44, role: 'CM' },
-      { x: 68, y: 44, role: 'CM' },
-      { x: 15, y: 36, role: 'LB' }, // Winger/Wingback left
-      { x: 85, y: 36, role: 'RB' }, // Winger/Wingback right
-      { x: 38, y: 16, role: 'ST' },
-      { x: 62, y: 16, role: 'ST' }
-    ]
+  // T2: istruzioni per slot (ruolo/compito). Vecchio salvataggio senza istruzioni -> default coerenti
+  // dal modulo attuale, mai un reset delle altre impostazioni tattiche.
+  const [slotInstructions, setSlotInstructions] = useState<Record<string, SlotInstruction>>(
+    tactic.slotInstructions ?? getDefaultSlotInstructions(tactic.module)
+  );
+
+  const handleModuleChange = (nextModule: Tactic['module']) => {
+    setModule(nextModule);
+    setSlotInstructions(current => mergeSlotInstructionsForModule(current, nextModule));
   };
 
-  const currentPositions = positionPresets[module];
+  const updateSlotInstruction = (slotId: string, changes: Partial<SlotInstruction>) => {
+    setSlotInstructions(current => ({
+      ...current,
+      [slotId]: { ...current[slotId], ...changes }
+    }));
+  };
+
+  const applyPreset = (preset: InstructionPresetId) => {
+    setSlotInstructions(current => applyInstructionPreset(current, module, preset));
+  };
+
+  // T1: coordinate/slot per modulo, unica fonte di verita' condivisa con tacticsEngine/match engine/
+  // live viewer (nessuna copia locale duplicata, cosi' tutti i 26 moduli restano coerenti ovunque).
+  const currentPositions = POSITION_PRESETS[module];
+  const currentFormationMeta = FORMATION_LIBRARY[module];
+  const formationCompatibility = getFormationCompatibilityReport(players, module);
 
   // Map starter IDs to actual players
   const startingPlayers = starters.map(id => players.find(p => p.id === id)).filter(Boolean) as Player[];
   // Bench players list
   const benchPlayers = bench.map(id => players.find(p => p.id === id)).filter(Boolean) as Player[];
+  // Infortunati/rientro-in-gruppo non sono selezionabili per un cambio; il rientro controllato lo e', con avviso.
+  const swappableBenchPlayers = benchPlayers.filter(p => p.status !== 'Infortunato');
 
   const draftTactic: Tactic = {
     module,
@@ -112,6 +107,7 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
     transition,
     attackingFocus,
     principles,
+    slotInstructions,
     gamePlan,
     familiarity: tactic.familiarity ?? 35,
     styleSignature: tactic.styleSignature,
@@ -123,6 +119,31 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
   const { compatibility, cohesion } = tacticalReport;
   const dnaDefinition = TEAM_DNA_DEFINITIONS[teamDNA.active];
   const dnaAlignment = getTacticalDNAAlignment(teamDNA, draftTactic);
+
+  // T2: ogni slot con il giocatore titolare assegnato (per indice, coerente con evaluateTactic) e la
+  // sua istruzione ruolo/compito, per l'editor e per il pannello "Impatto tattico" qui sotto.
+  const slotsWithInstructions = currentPositions.map((slot, index) => {
+    const slotId = `slot_${index}`;
+    const instruction = slotInstructions[slotId] ?? { slotId, role: 'central_midfielder' as const, duty: 'support' as const };
+    const assignedPlayer = startingPlayers[index];
+    const fit = assignedPlayer ? evaluatePlayerInstructionFit(assignedPlayer, slot.role, instruction, draftTactic) : null;
+    return { slot, index, slotId, instruction, assignedPlayer, fit };
+  });
+
+  // Solo per il pannello riassuntivo: formazione + media delle istruzioni scelte sui titolari attuali.
+  // Non e' l'output ufficiale (quello resta tacticalReport/evaluateTactic), solo una lettura rapida.
+  const impactAxis = (getter: (m: FormationTacticalModifiers) => number) => Math.round(
+    getter(currentFormationMeta.tacticalModifiers) +
+    slotsWithInstructions.reduce((sum, entry) => sum + (entry.assignedPlayer ? getter(PLAYER_INSTRUCTION_ROLE_META[entry.instruction.role].modifiers) : 0), 0) / 3
+  );
+  const tacticalImpact = {
+    wingThreat: impactAxis(m => m.wingThreat),
+    centralControl: impactAxis(m => m.centralControl),
+    pressingPotential: impactAxis(m => m.pressingPotential),
+    defensiveTransitionRisk: impactAxis(m => m.defensiveTransitionRisk),
+    chanceCreation: impactAxis(m => m.chanceCreation),
+    defensiveSolidity: impactAxis(m => m.defensiveSolidity)
+  };
 
   const togglePrinciple = (principle: NonNullable<Tactic['principles']>[number]) => {
     setPrinciples(current => (
@@ -170,6 +191,7 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
       transition,
       attackingFocus,
       principles,
+      slotInstructions,
       gamePlan,
       familiarity: tactic.familiarity ?? 35,
       styleSignature: tactic.styleSignature,
@@ -181,7 +203,7 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
   };
 
   const handleQuickSelection = () => {
-    const selection = selectBestLineupForModule(players, module);
+    const selection = selectBestLineupForModule(players, module, slotInstructions);
     setStarters(selection.starters);
     setBench(selection.bench);
     saveTactic({
@@ -198,6 +220,7 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
       transition,
       attackingFocus,
       principles,
+      slotInstructions,
       gamePlan,
       familiarity: tactic.familiarity ?? 35,
       styleSignature: tactic.styleSignature,
@@ -238,6 +261,23 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
             const isSelected = swappingStarterIndex === index;
             const roleFit = getRoleFitScore(player.role, pos.role as Player['role']);
             const fitColor = roleFit >= 0.92 ? 'var(--color-pitch)' : roleFit >= 0.65 ? 'var(--color-gold)' : 'var(--color-danger)';
+            const availability = getPlayerAvailabilitySummary(player);
+            const availabilityBadge =
+              availability.label === 'Indisponibile' ? { text: 'Indisponibile', color: 'var(--color-danger)' } :
+              availability.label === 'Rientro controllato' ? { text: 'Rientro guidato', color: 'var(--color-gold)' } :
+              availability.label === 'A rischio' ? { text: 'Rischio infortunio', color: 'var(--color-gold)' } :
+              null;
+            // Fuori dal ruolo naturale: mostra quanto e' familiare la posizione assegnata in campo.
+            const slotRole = pos.role as Player['role'];
+            const familiarityEntry = slotRole !== player.role ? getRoleFamiliarityEntry(player, slotRole) : null;
+            const familiarityBadge = familiarityEntry ? {
+              text: ROLE_FAMILIARITY_STATUS_LABELS[familiarityEntry.status],
+              color:
+                familiarityEntry.status === 'natural' ? 'var(--color-pitch)' :
+                familiarityEntry.status === 'competent' ? 'var(--color-lime)' :
+                familiarityEntry.status === 'usable' ? 'var(--color-gold)' :
+                'var(--color-danger)'
+            } : null;
 
             return (
               <motion.div
@@ -274,6 +314,46 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
                 <span className="pitch-player-overall" style={{ color: roleFit >= 0.92 ? 'var(--text-muted)' : fitColor }}>
                   {player.role}
                 </span>
+                {availabilityBadge && (
+                  <span
+                    title={availability.reasons[0]}
+                    style={{
+                      position: 'absolute',
+                      top: '-6px',
+                      right: '-6px',
+                      fontSize: '0.55rem',
+                      fontWeight: 800,
+                      padding: '2px 5px',
+                      borderRadius: '999px',
+                      color: availabilityBadge.color,
+                      background: 'rgba(11,15,20,0.85)',
+                      border: `1px solid ${availabilityBadge.color}`,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {availabilityBadge.text}
+                  </span>
+                )}
+                {familiarityBadge && (
+                  <span
+                    title={`Ruolo assegnato: ${slotRole}. Familiarita' ${Math.round(familiarityEntry!.familiarity)}/100.`}
+                    style={{
+                      position: 'absolute',
+                      bottom: '-6px',
+                      left: '-6px',
+                      fontSize: '0.55rem',
+                      fontWeight: 800,
+                      padding: '2px 5px',
+                      borderRadius: '999px',
+                      color: familiarityBadge.color,
+                      background: 'rgba(11,15,20,0.85)',
+                      border: `1px solid ${familiarityBadge.color}`,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {familiarityBadge.text}
+                  </span>
+                )}
               </motion.div>
             );
           })}
@@ -310,9 +390,12 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
                   </button>
                 </div>
 
-                {/* Horizontal scroll list of bench substitutes */}
+                {/* Horizontal scroll list of bench substitutes (indisponibili esclusi) */}
                 <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
-                  {benchPlayers.map(p => (
+                  {swappableBenchPlayers.map(p => {
+                    const targetSlotRole = currentPositions[swappingStarterIndex]?.role as Player['role'] | undefined;
+                    const swapFamiliarity = targetSlotRole && targetSlotRole !== p.role ? getRoleFamiliarityEntry(p, targetSlotRole) : null;
+                    return (
                     <button
                       key={p.id}
                       onClick={() => handleSwap(p.id)}
@@ -338,8 +421,12 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
                         <span className={`badge badge-${p.role === 'GK' ? 'GK' : p.role.match(/CB|LB|RB/) ? 'DF' : p.role.match(/DM|CM|AM/) ? 'MF' : 'FW'}`} style={{ padding: '0 3px' }}>{p.role}</span>
                         <span style={{ color: 'var(--color-lime)' }}>{p.overall}</span>
                       </div>
+                      {swapFamiliarity && (
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{ROLE_FAMILIARITY_STATUS_LABELS[swapFamiliarity.status]}</span>
+                      )}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </motion.div>
             )}
@@ -509,7 +596,7 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
               <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>Modulo Principale</label>
               <select
                 value={module}
-                onChange={e => setModule(e.target.value as any)}
+                onChange={e => handleModuleChange(e.target.value as Tactic['module'])}
                 style={{
                   width: '100%',
                   backgroundColor: 'var(--bg-surface-elevated)',
@@ -521,10 +608,19 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
                   fontWeight: 600
                 }}
               >
-                <option value="4-3-3">4-3-3 (Olandese classico - Attacco sulle ali)</option>
-                <option value="4-2-3-1">4-2-3-1 (Moderna fluidità - Trequartista perno)</option>
-                <option value="3-5-2">3-5-2 (Solidità difensiva - Spinta sulle fasce)</option>
+                {([4, 3, 5] as const).map(defLine => (
+                  <optgroup key={defLine} label={`Difesa a ${defLine}`}>
+                    {Object.values(FORMATION_LIBRARY).filter(formation => formation.defensiveLine === defLine).map(formation => (
+                      <option key={formation.id} value={formation.id}>{formation.label} — {formation.description}</option>
+                    ))}
+                  </optgroup>
+                ))}
               </select>
+              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '8px' }}>
+                {currentFormationMeta.tags.map(tag => (
+                  <span key={tag} className="badge" style={{ fontSize: '0.62rem' }}>{tag}</span>
+                ))}
+              </div>
             </div>
 
             <button
@@ -561,6 +657,173 @@ export default function Tactics({ players, tactic, saveTactic, starters, setStar
                 ))}
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* T1: Analisi modulo — punti forti/deboli, compatibilita rosa, ruoli critici */}
+        <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Shield size={16} style={{ color: 'var(--color-lime)' }} />
+            Analisi modulo: {currentFormationMeta.label}
+          </h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Compatibilità rosa</span>
+            <strong style={{
+              fontSize: '0.85rem',
+              color: formationCompatibility.adaptationRisk === 'low' ? 'var(--color-pitch)' : formationCompatibility.adaptationRisk === 'medium' ? 'var(--color-gold)' : 'var(--color-danger)'
+            }}>
+              {formationCompatibility.compatibilityScore}% · rischio adattamento {formationCompatibility.adaptationRisk === 'low' ? 'basso' : formationCompatibility.adaptationRisk === 'medium' ? 'medio' : 'alto'}
+            </strong>
+          </div>
+          <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+            <div style={{
+              width: `${formationCompatibility.compatibilityScore}%`, height: '100%',
+              background: formationCompatibility.adaptationRisk === 'low' ? 'var(--color-pitch)' : formationCompatibility.adaptationRisk === 'medium' ? 'var(--color-gold)' : 'var(--color-danger)'
+            }} />
+          </div>
+          {formationCompatibility.missingRoles.length > 0 && (
+            <p style={{ fontSize: '0.72rem', color: 'var(--color-danger)', lineHeight: 1.4 }}>
+              Ruoli mancanti o scoperti in rosa: {formationCompatibility.missingRoles.join(', ')}.
+            </p>
+          )}
+          {formationCompatibility.keyPlayers.length > 0 && (
+            <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+              <strong style={{ color: 'var(--text-primary)' }}>Giocatori chiave:</strong> {formationCompatibility.keyPlayers.join(', ')}.
+            </p>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '4px' }}>
+            <div>
+              <p style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-pitch)', marginBottom: '4px' }}>Punti forti</p>
+              {currentFormationMeta.strengths.map(item => (
+                <p key={item} style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.35, marginBottom: '3px' }}>• {item}</p>
+              ))}
+            </div>
+            <div>
+              <p style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-danger)', marginBottom: '4px' }}>Punti deboli</p>
+              {currentFormationMeta.weaknesses.map(item => (
+                <p key={item} style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.35, marginBottom: '3px' }}>• {item}</p>
+              ))}
+            </div>
+          </div>
+          <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.35, marginTop: '2px' }}>
+            Effetto previsto sul match: attacco {tacticalReport.attack}, centrocampo {tacticalReport.midfield}, difesa {tacticalReport.defense}, carico fisico {tacticalReport.fatigueLoad}.
+          </p>
+        </div>
+
+        {/* T2: preset rapidi — cambiano solo i compiti (duty), mai modulo o ruoli assegnati */}
+        <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <h3 style={{ fontSize: '0.9rem', fontWeight: 700 }}>Preset rapidi</h3>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {(Object.keys(INSTRUCTION_PRESET_LABELS) as InstructionPresetId[]).map(preset => (
+              <button
+                key={preset}
+                onClick={() => applyPreset(preset)}
+                className="btn-secondary"
+                style={{ fontSize: '0.7rem', padding: '7px 10px' }}
+              >
+                {INSTRUCTION_PRESET_LABELS[preset]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* T2: Impatto tattico — lettura rapida di modulo + istruzioni scelte sui titolari attuali */}
+        <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <h3 style={{ fontSize: '0.9rem', fontWeight: 700 }}>Impatto tattico</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px' }}>
+            {[
+              ['Ampiezza', tacticalImpact.wingThreat],
+              ['Controllo centrale', tacticalImpact.centralControl],
+              ['Pressing', tacticalImpact.pressingPotential],
+              ['Rischio transizione', tacticalImpact.defensiveTransitionRisk],
+              ['Creazione occasioni', tacticalImpact.chanceCreation],
+              ['Solidità difensiva', tacticalImpact.defensiveSolidity],
+              ['Fatica prevista', tacticalReport.fatigueLoad]
+            ].map(([label, value]) => (
+              <div key={label} style={{ padding: '7px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', backgroundColor: 'rgba(26,33,42,0.24)', textAlign: 'center' }}>
+                <p style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{label}</p>
+                <strong style={{ fontSize: '0.9rem' }}>{value}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* T2: istruzioni per ruolo/slot */}
+        <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <UserCheck size={16} style={{ color: 'var(--color-pitch)' }} />
+            Istruzioni per ruolo
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '420px', overflowY: 'auto' }}>
+            {slotsWithInstructions.map(({ slot, slotId, instruction, assignedPlayer, fit }) => {
+              const availableRoles = (Object.keys(PLAYER_INSTRUCTION_ROLE_META) as (keyof typeof PLAYER_INSTRUCTION_ROLE_META)[])
+                .filter(roleKey => PLAYER_INSTRUCTION_ROLE_META[roleKey].baseRoles.includes(slot.role));
+              // wide_centre_back ha senso solo con difesa a tre (braccetto): resta selezionabile ma
+              // segnalato come non consigliato altrove, invece di sparire dalla lista.
+              const notRecommended = (roleKey: PlayerInstructionRole) =>
+                roleKey === 'wide_centre_back' && currentFormationMeta.defensiveLine !== 3;
+              const compatColor = fit && (
+                fit.label === 'Ottimo' ? 'var(--color-pitch)' :
+                fit.label === 'Buono' ? 'var(--color-lime)' :
+                fit.label === 'Adattato' ? 'var(--color-gold)' :
+                'var(--color-danger)'
+              );
+              return (
+                <div key={slotId} style={{ padding: '8px 9px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'rgba(26,33,42,0.18)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', gap: '8px' }}>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>
+                      {slot.role} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({assignedPlayer?.name ?? 'slot vuoto'})</span>
+                    </span>
+                    {fit && (
+                      <span style={{ fontSize: '0.64rem', fontWeight: 800, color: compatColor ?? undefined }}>{fit.label} · {fit.score}</span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select
+                      value={instruction.role}
+                      onChange={e => updateSlotInstruction(slotId, { role: e.target.value as SlotInstruction['role'] })}
+                      style={{ flex: '1 1 160px', backgroundColor: 'var(--bg-surface-elevated)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', padding: '6px', fontSize: '0.7rem', color: 'var(--text-primary)' }}
+                    >
+                      {availableRoles.map(roleKey => (
+                        <option key={roleKey} value={roleKey}>
+                          {PLAYER_INSTRUCTION_ROLE_META[roleKey].label}{notRecommended(roleKey) ? ' (non consigliato qui)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <div style={{ display: 'flex', gap: '3px' }}>
+                      {(['defend', 'support', 'attack'] as const).map(duty => (
+                        <button
+                          key={duty}
+                          onClick={() => updateSlotInstruction(slotId, { duty })}
+                          style={{
+                            padding: '5px 8px',
+                            fontSize: '0.62rem',
+                            fontWeight: 700,
+                            borderRadius: 'var(--radius-sm)',
+                            border: '1px solid var(--border-light)',
+                            cursor: 'pointer',
+                            backgroundColor: instruction.duty === duty ? 'var(--color-pitch)' : 'var(--bg-surface-elevated)',
+                            color: instruction.duty === duty ? '#042F1A' : 'var(--text-primary)'
+                          }}
+                        >
+                          {duty === 'defend' ? 'Difesa' : duty === 'support' ? 'Supporto' : 'Attacco'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {fit && (fit.label === 'Rischioso' || fit.label === 'Fuori ruolo') && (
+                    <p style={{ fontSize: '0.64rem', color: 'var(--color-danger)', marginTop: '5px', lineHeight: 1.35 }}>
+                      ⚠ {fit.reasons[0]}
+                    </p>
+                  )}
+                  {notRecommended(instruction.role) && (
+                    <p style={{ fontSize: '0.64rem', color: 'var(--color-gold)', marginTop: '5px', lineHeight: 1.35 }}>
+                      Ruolo pensato per una difesa a tre: qui il suo effetto è ridotto.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

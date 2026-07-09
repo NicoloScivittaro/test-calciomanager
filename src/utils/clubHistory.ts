@@ -12,7 +12,10 @@ import {
   ClubStakeholderState,
   MatchEvent,
   MatchStats,
-  Player
+  Player,
+  PlayerClubHistoryEntry,
+  RivalryStatus,
+  RivalryType
 } from '../types';
 
 export const CURRENT_SEASON = '2026/27';
@@ -206,7 +209,7 @@ export const normalizeClubHistory = (history: ClubHistoryState): ClubHistoryStat
   profitableDeals: history.profitableDeals ?? [],
   emotionalReturns: history.emotionalReturns ?? [],
   newEraSignings: history.newEraSignings ?? [],
-  rivalries: history.rivalries ?? [],
+  rivalries: (history.rivalries ?? []).map(normalizeRivalry),
   promises: history.promises ?? [],
   stakeholders: normalizeStakeholders(history.clubName, history.stakeholders),
   memories: (history.memories ?? []).map(normalizeMemory)
@@ -385,30 +388,332 @@ const syncPromisesFromMemory = (history: ClubHistoryState, memory: ClubMemory): 
   };
 };
 
+export const RIVALRY_TYPE_LABELS: Record<RivalryType, string> = {
+  storica: 'Rivalita storica',
+  derby: 'Derby cittadino',
+  regionale: 'Rivalita regionale',
+  emergente: 'Rivalita emergente',
+  corsa_titolo: 'Corsa allo stesso obiettivo',
+  trasferimento: 'Nata dal mercato'
+};
+
+export const RIVALRY_STATUS_LABELS: Record<RivalryStatus, string> = {
+  tensione: 'Tensione',
+  rivalita_riconosciuta: 'Rivalita riconosciuta',
+  rivalita_forte: 'Rivalita forte',
+  nemico_storico: 'Nemico storico'
+};
+
+const determineRivalryStatus = (heat: number): RivalryStatus => {
+  if (heat >= 82) return 'nemico_storico';
+  if (heat >= 65) return 'rivalita_forte';
+  if (heat >= 45) return 'rivalita_riconosciuta';
+  return 'tensione';
+};
+
+const normalizeRivalry = (raw: Partial<ClubRivalry> & { opponent: string; heat: number; reason: string; startedAt: string; memories: string[]; id: string }): ClubRivalry => {
+  const heat = Math.round(clamp(raw.heat, 0, 100));
+  return {
+    id: raw.id,
+    opponent: raw.opponent,
+    type: raw.type ?? 'emergente',
+    heat,
+    respect: Math.round(clamp(raw.respect ?? 50, 0, 100)),
+    reason: raw.reason,
+    startedAt: raw.startedAt,
+    status: raw.status ?? determineRivalryStatus(heat),
+    memories: (raw.memories ?? []).slice(0, 5),
+    wins: raw.wins ?? 0,
+    draws: raw.draws ?? 0,
+    losses: raw.losses ?? 0,
+    lastMeetingSeason: raw.lastMeetingSeason,
+    lastMeetingResult: raw.lastMeetingResult,
+    exPlayersInvolved: (raw.exPlayersInvolved ?? []).slice(0, 5),
+    updatedAt: raw.updatedAt ?? raw.startedAt
+  };
+};
+
 const upsertRivalry = (rivalries: ClubRivalry[], memory: ClubMemory) => {
   if (!memory.opponent) return rivalries;
 
   const existing = rivalries.find(rivalry => rivalry.opponent === memory.opponent);
   if (!existing) {
-    return [{
+    const newRivalriesThisSeason = rivalries.filter(rivalry => rivalry.startedAt === memory.season && rivalry.type !== 'derby').length;
+    if (memory.importance < 60 || newRivalriesThisSeason >= 1) return rivalries;
+
+    const heat = clamp(48 + memory.importance * 0.35, 35, 95);
+    return [normalizeRivalry({
       id: `rivalry_${memory.opponent.toLowerCase().replace(/[^a-z0-9]+/gi, '_')}_${Date.now()}`,
       opponent: memory.opponent,
-      heat: clamp(48 + memory.importance * 0.35, 35, 95),
+      heat,
       reason: memory.title,
       startedAt: memory.season,
       memories: [memory.description]
-    }, ...rivalries].slice(0, 8);
+    }), ...rivalries].slice(0, 8);
   }
 
-  return rivalries.map(rivalry => rivalry.id === existing.id
-    ? {
-        ...rivalry,
-        heat: clamp(rivalry.heat + 8 + memory.importance * 0.08, 0, 100),
-        reason: memory.title,
-        memories: [memory.description, ...rivalry.memories].slice(0, 5)
+  return rivalries.map(rivalry => {
+    if (rivalry.id !== existing.id) return rivalry;
+    const heat = clamp(rivalry.heat + 8 + memory.importance * 0.08, 0, 100);
+    return {
+      ...rivalry,
+      heat,
+      status: determineRivalryStatus(heat),
+      reason: memory.title,
+      memories: [memory.description, ...rivalry.memories].slice(0, 5),
+      updatedAt: new Date().toISOString()
+    };
+  });
+};
+
+export interface RivalryMatchContext {
+  opponent: string;
+  season: string;
+  round: number;
+  scoreUser: number;
+  scoreOpponent: number;
+  isDerby: boolean; // same city, real ClubProfile data
+  isTitleRace: boolean; // both clubs realistically fighting for the same standings zone
+  hasMajorEmotionalStory: boolean; // an Emotional Narrative already flags this match as important
+  matchImportance: number; // 0-100, reused from the same formula careerWorld.ts uses
+  decisiveExPlayerName?: string; // real ex-user-club player who scored for the opponent this match
+}
+
+export const buildExPlayerReturnMemory = (context: {
+  playerName: string;
+  opponent: string;
+  season: string;
+  scoreUser: number;
+  scoreOpponent: number;
+  isNotable: boolean;
+}): ClubMemoryDraft | null => {
+  if (!context.isNotable) return null;
+  return {
+    season: context.season,
+    category: 'rivalry',
+    title: `${context.playerName} punisce il suo passato`,
+    description: `${context.playerName}, un ex amato dai tifosi, decide la gara contro la sua vecchia squadra: la curva non dimentica chi ha ceduto.`,
+    importance: 74,
+    fanImpact: -3,
+    dressingRoomImpact: -1,
+    tags: ['ex-giocatore', 'rivalita'],
+    playerNames: [context.playerName],
+    opponent: context.opponent,
+    score: `${context.scoreUser}-${context.scoreOpponent}`
+  };
+};
+
+export const applyRivalryMatchResult = (history: ClubHistoryState, context: RivalryMatchContext): ClubHistoryState => {
+  const existing = history.rivalries.find(rivalry => rivalry.opponent === context.opponent);
+  const scoreLabel = `${context.scoreUser}-${context.scoreOpponent}`;
+  const result: 'W' | 'D' | 'L' = context.scoreUser > context.scoreOpponent ? 'W' : context.scoreUser === context.scoreOpponent ? 'D' : 'L';
+  const resultLabelIt = result === 'W' ? 'Vittoria' : result === 'D' ? 'Pareggio' : 'Sconfitta';
+  const closeMatch = Math.abs(context.scoreUser - context.scoreOpponent) <= 1;
+  const meaningfulSignal = context.isDerby || context.isTitleRace || context.matchImportance >= 60 || context.hasMajorEmotionalStory;
+
+  if (!existing) {
+    if (!context.isDerby) {
+      const newRivalriesThisSeason = history.rivalries.filter(rivalry => rivalry.startedAt === context.season && rivalry.type !== 'derby').length;
+      if (!meaningfulSignal || newRivalriesThisSeason >= 1) {
+        return history;
       }
-    : rivalry
-  );
+    }
+
+    const type: RivalryType = context.isDerby ? 'derby' : context.isTitleRace ? 'corsa_titolo' : 'emergente';
+    const startHeat = context.isDerby ? 58 : context.isTitleRace ? 46 : 40;
+    const heat = clamp(startHeat + (result === 'L' ? 4 : 0), 0, 100);
+    const founding = `Giornata ${context.round}: ${resultLabelIt} ${scoreLabel} contro ${context.opponent}${context.isDerby ? ' - nasce il derby' : '.'}`;
+    const rivalry = normalizeRivalry({
+      id: `rivalry_${context.opponent.toLowerCase().replace(/[^a-z0-9]+/gi, '_')}_${Date.now()}`,
+      opponent: context.opponent,
+      type,
+      heat,
+      respect: 50,
+      reason: context.isDerby ? `Derby cittadino con il ${context.opponent}.` : context.isTitleRace ? 'Corsa diretta per lo stesso obiettivo di stagione.' : 'Sfida sentita nata da una gara di forte tensione.',
+      startedAt: context.season,
+      status: determineRivalryStatus(heat),
+      memories: [founding],
+      wins: result === 'W' ? 1 : 0,
+      draws: result === 'D' ? 1 : 0,
+      losses: result === 'L' ? 1 : 0,
+      lastMeetingSeason: context.season,
+      lastMeetingResult: `${resultLabelIt} ${scoreLabel}`,
+      exPlayersInvolved: context.decisiveExPlayerName ? [context.decisiveExPlayerName] : [],
+      updatedAt: new Date().toISOString()
+    });
+
+    return { ...history, rivalries: [rivalry, ...history.rivalries].slice(0, 10) };
+  }
+
+  const isDerbyRivalry = existing.type === 'derby';
+  let heatDelta = 0;
+  let respectDelta = 0;
+  if (isDerbyRivalry) {
+    heatDelta = result === 'W' ? 9 : result === 'L' ? 7 : 3;
+  } else if (meaningfulSignal) {
+    heatDelta = result === 'L' ? 5 : result === 'W' ? 4 : 2;
+  }
+  if (closeMatch && context.matchImportance >= 55) respectDelta += 3;
+  if (Math.abs(context.scoreUser - context.scoreOpponent) >= 3) respectDelta -= 2;
+
+  const nextHeat = clamp(existing.heat + clamp(heatDelta, -12, 14), 0, 100);
+  const nextRespect = clamp(existing.respect + clamp(respectDelta, -8, 8), 0, 100);
+  const eventWorthy = isDerbyRivalry || (meaningfulSignal && (result !== 'D' || closeMatch));
+  const foundingLine = `Giornata ${context.round}: ${resultLabelIt} ${scoreLabel} contro ${context.opponent}.`;
+  const alreadyLogged = existing.memories[0] === foundingLine;
+  const nextMemories = eventWorthy && !alreadyLogged
+    ? [foundingLine, ...existing.memories].slice(0, 5)
+    : existing.memories;
+  const nextExPlayers = context.decisiveExPlayerName && !existing.exPlayersInvolved.includes(context.decisiveExPlayerName)
+    ? [context.decisiveExPlayerName, ...existing.exPlayersInvolved].slice(0, 5)
+    : existing.exPlayersInvolved;
+
+  const updated: ClubRivalry = {
+    ...existing,
+    heat: nextHeat,
+    respect: nextRespect,
+    status: determineRivalryStatus(nextHeat),
+    wins: existing.wins + (result === 'W' ? 1 : 0),
+    draws: existing.draws + (result === 'D' ? 1 : 0),
+    losses: existing.losses + (result === 'L' ? 1 : 0),
+    lastMeetingSeason: context.season,
+    lastMeetingResult: `${resultLabelIt} ${scoreLabel}`,
+    memories: nextMemories,
+    exPlayersInvolved: nextExPlayers,
+    updatedAt: new Date().toISOString()
+  };
+
+  return { ...history, rivalries: history.rivalries.map(rivalry => rivalry.id === existing.id ? updated : rivalry) };
+};
+
+export interface RivalryTransferContext {
+  opponentClub: string;
+  playerName: string;
+  isRivalCounterpart: boolean;
+  isBigTransfer: boolean;
+  season: string;
+  direction: 'buy' | 'sell';
+}
+
+export const applyRivalryTransferImpact = (history: ClubHistoryState, context: RivalryTransferContext): ClubHistoryState => {
+  if (!context.isRivalCounterpart) return history;
+
+  const existing = history.rivalries.find(rivalry => rivalry.opponent === context.opponentClub);
+  const label = context.direction === 'sell'
+    ? `Cessione di ${context.playerName} alla rivale ${context.opponentClub}.`
+    : `Colpo di mercato: ${context.playerName} arriva dalla rivale ${context.opponentClub}.`;
+
+  if (!existing) {
+    if (!context.isBigTransfer) return history;
+    const rivalry = normalizeRivalry({
+      id: `rivalry_${context.opponentClub.toLowerCase().replace(/[^a-z0-9]+/gi, '_')}_${Date.now()}`,
+      opponent: context.opponentClub,
+      type: 'trasferimento',
+      heat: 50,
+      respect: 48,
+      reason: label,
+      startedAt: context.season,
+      status: 'tensione',
+      memories: [label],
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      exPlayersInvolved: context.direction === 'sell' ? [context.playerName] : [],
+      updatedAt: new Date().toISOString()
+    });
+    return { ...history, rivalries: [rivalry, ...history.rivalries].slice(0, 10) };
+  }
+
+  const heatDelta = context.direction === 'sell'
+    ? (context.isBigTransfer ? 14 : 8)
+    : (context.isBigTransfer ? 6 : 3);
+  const nextHeat = clamp(existing.heat + heatDelta, 0, 100);
+  const nextMemories = context.isBigTransfer && existing.memories[0] !== label
+    ? [label, ...existing.memories].slice(0, 5)
+    : existing.memories;
+  const nextExPlayers = context.direction === 'sell' && !existing.exPlayersInvolved.includes(context.playerName)
+    ? [context.playerName, ...existing.exPlayersInvolved].slice(0, 5)
+    : existing.exPlayersInvolved;
+
+  const updated: ClubRivalry = {
+    ...existing,
+    heat: nextHeat,
+    status: determineRivalryStatus(nextHeat),
+    memories: nextMemories,
+    exPlayersInvolved: nextExPlayers,
+    updatedAt: new Date().toISOString()
+  };
+
+  return { ...history, rivalries: history.rivalries.map(rivalry => rivalry.id === existing.id ? updated : rivalry) };
+};
+
+// ─── Player Club History (career timeline persisted on the player itself) ───
+
+export const getPlayerClubHistory = (
+  player: Player,
+  currentClubId: string,
+  currentClubName: string,
+  fallbackSeason: string
+): PlayerClubHistoryEntry[] => {
+  if (player.clubHistory && player.clubHistory.length > 0) return player.clubHistory;
+  return [{
+    clubId: currentClubId,
+    clubName: currentClubName,
+    joinedSeason: fallbackSeason,
+    transferType: 'initial'
+  }];
+};
+
+export const isFormerClubPlayer = (
+  player: Player,
+  formerClubId: string,
+  currentClubId: string,
+  currentClubName: string,
+  fallbackSeason: string
+): boolean => {
+  if (formerClubId === currentClubId) return false;
+  const history = getPlayerClubHistory(player, currentClubId, currentClubName, fallbackSeason);
+  return history.some(entry => entry.clubId === formerClubId && Boolean(entry.leftSeason));
+};
+
+export interface PlayerTransferHistoryContext {
+  fromClubId: string;
+  fromClubName: string;
+  toClubId: string;
+  toClubName: string;
+  season: string;
+  transferType: 'purchase' | 'sale' | 'loan';
+  fee?: number;
+}
+
+export const applyPlayerTransferToClubHistory = (
+  existingHistory: PlayerClubHistoryEntry[] | undefined,
+  context: PlayerTransferHistoryContext
+): PlayerClubHistoryEntry[] => {
+  const baseline: PlayerClubHistoryEntry[] = existingHistory && existingHistory.length > 0
+    ? existingHistory
+    : [{
+        clubId: context.fromClubId,
+        clubName: context.fromClubName,
+        joinedSeason: context.season,
+        transferType: 'initial'
+      }];
+
+  const closed = baseline.map((entry, index) => (
+    index === baseline.length - 1 && entry.clubId === context.fromClubId && !entry.leftSeason
+      ? { ...entry, leftSeason: context.season }
+      : entry
+  ));
+
+  if (closed[closed.length - 1]?.clubId === context.toClubId) return closed;
+
+  return [...closed, {
+    clubId: context.toClubId,
+    clubName: context.toClubName,
+    joinedSeason: context.season,
+    transferType: context.transferType,
+    fee: context.fee
+  }];
 };
 
 export const createInitialClubHistory = (

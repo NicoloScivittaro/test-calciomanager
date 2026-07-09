@@ -7,6 +7,7 @@ import { getPersonalityArchetype, getPersonalityShortNote } from '../../utils/pl
 import { getPlayerProjectRole, getProjectRoleColor } from '../../utils/playerProjectRole';
 import PlayerProfileModal from './PlayerProfileModal';
 import TeamLogo from './TeamLogo';
+import { ModalPortal, useModalBehavior } from './BaseModal';
 
 interface ClubInfoModalProps {
   club: ClubProfile | null;
@@ -68,6 +69,8 @@ export default function ClubInfoModal({
     setPlayerSheet(null);
   }, [club?.id]);
 
+  useModalBehavior(!!club, onClose);
+
   const meta = club as ClubMeta | null;
   const avgOverall = Math.round(roster.reduce((sum, player) => sum + player.overall, 0) / Math.max(1, roster.length));
   const avgPotential = Math.round(roster.reduce((sum, player) => sum + player.potential, 0) / Math.max(1, roster.length));
@@ -110,6 +113,7 @@ export default function ClubInfoModal({
   };
 
   return (
+    <ModalPortal>
     <AnimatePresence>
       {club && (
         <div className="modal-backdrop" onClick={onClose}>
@@ -475,5 +479,6 @@ export default function ClubInfoModal({
         </div>
       )}
     </AnimatePresence>
+    </ModalPortal>
   );
 }

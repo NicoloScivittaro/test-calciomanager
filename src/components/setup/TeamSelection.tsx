@@ -19,9 +19,17 @@ const difficultyColors: Record<ClubProfile['difficulty'], string> = {
 };
 
 export default function TeamSelection({ clubs, managerName, onSelect }: TeamSelectionProps) {
+  const [divisionFilter, setDivisionFilter] = useState<'serie_a' | 'serie_b'>('serie_a');
+  const filteredClubs = clubs.filter(club => (club.division ?? 'serie_a') === divisionFilter);
   const [selectedId, setSelectedId] = useState(clubs[0]?.id ?? '');
   const [infoClub, setInfoClub] = useState<ClubProfile | null>(null);
-  const selectedClub = clubs.find(club => club.id === selectedId) ?? clubs[0];
+  const selectedClub = filteredClubs.find(club => club.id === selectedId) ?? filteredClubs[0] ?? clubs[0];
+
+  const handleSelectDivision = (division: 'serie_a' | 'serie_b') => {
+    setDivisionFilter(division);
+    const firstOfDivision = clubs.find(club => (club.division ?? 'serie_a') === division);
+    if (firstOfDivision) setSelectedId(firstOfDivision.id);
+  };
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('it-IT', {
@@ -62,13 +70,25 @@ export default function TeamSelection({ clubs, managerName, onSelect }: TeamSele
       </section>
 
       <section className="team-selection-layout">
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+          {(['serie_a', 'serie_b'] as const).map(division => (
+            <button
+              key={division}
+              onClick={() => handleSelectDivision(division)}
+              className={divisionFilter === division ? 'btn-primary' : 'btn-secondary'}
+              style={{ padding: '8px 16px', fontSize: '0.8rem' }}
+            >
+              {division === 'serie_a' ? 'Serie A' : 'Serie B'}
+            </button>
+          ))}
+        </div>
         <motion.div
           className="club-grid"
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, delay: 0.05 }}
         >
-          {clubs.map((club) => {
+          {filteredClubs.map((club) => {
             const isSelected = club.id === selectedClub.id;
 
             return (
@@ -114,7 +134,9 @@ export default function TeamSelection({ clubs, managerName, onSelect }: TeamSele
           <div className="club-detail-top">
             <TeamLogo club={selectedClub} size={72} rounded={16} highlighted />
             <div>
-              <span className="selection-kicker">Contratto pronto</span>
+              <span className="selection-kicker">
+                {(selectedClub.division ?? 'serie_a') === 'serie_a' ? 'Serie A' : 'Serie B'} · Contratto pronto
+              </span>
               <h2>{selectedClub.name}</h2>
               <p>{selectedClub.highlight}</p>
             </div>

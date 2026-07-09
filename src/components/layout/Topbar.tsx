@@ -1,6 +1,13 @@
-import React, { useState } from 'react';
-import { Bell, Euro, Calendar } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Bell, Euro, Calendar, Download, Upload } from 'lucide-react';
 import { NewsItem } from '../../types';
+import {
+  createCareerBackup,
+  downloadCareerBackup,
+  parseCareerBackupFile,
+  restoreCareerBackup,
+  validateCareerBackup
+} from '../../utils/careerBackup';
 
 interface TopbarProps {
   currentTab: string;
@@ -9,10 +16,63 @@ interface TopbarProps {
   news: NewsItem[];
   markNewsAsRead: (id: string) => void;
   activeDecisionCount?: number;
+  careerStorageKeys: string[];
+  appDataVersion: string;
+  clubName?: string;
 }
 
-export default function Topbar({ currentTab, budget, currentMatchDate, news, markNewsAsRead, activeDecisionCount = 0 }: TopbarProps) {
+export default function Topbar({ currentTab, budget, currentMatchDate, news, markNewsAsRead, activeDecisionCount = 0, careerStorageKeys, appDataVersion, clubName }: TopbarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
+  const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const showBackupMessage = (message: { type: 'success' | 'error'; text: string }) => {
+    setBackupMessage(message);
+    window.setTimeout(() => setBackupMessage(current => (current === message ? null : current)), 6000);
+  };
+
+  const handleExportBackup = () => {
+    try {
+      const backup = createCareerBackup(careerStorageKeys, appDataVersion, clubName);
+      downloadCareerBackup(backup);
+      showBackupMessage({ type: 'success', text: 'Salvataggio esportato correttamente.' });
+    } catch {
+      showBackupMessage({ type: 'error', text: 'Esportazione non riuscita. Riprova.' });
+    }
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const backup = await parseCareerBackupFile(file);
+      const validation = validateCareerBackup(backup, appDataVersion);
+      if (!validation.ok) {
+        showBackupMessage({ type: 'error', text: validation.reason ?? 'File di backup non valido.' });
+        return;
+      }
+
+      const confirmed = window.confirm(
+        'Caricando questo salvataggio verrà sostituita la carriera attuale.\nVuoi continuare?'
+      );
+      if (!confirmed) return;
+
+      try {
+        restoreCareerBackup(backup, careerStorageKeys);
+        window.location.reload();
+      } catch {
+        showBackupMessage({ type: 'error', text: 'Ripristino non riuscito: la carriera attuale è stata mantenuta.' });
+      }
+    } catch (error) {
+      showBackupMessage({ type: 'error', text: error instanceof Error ? error.message : 'File di backup non valido.' });
+    }
+  };
 
   const getPageTitle = (tab: string) => {
     switch (tab) {
@@ -110,10 +170,60 @@ export default function Topbar({ currentTab, budget, currentMatchDate, news, mar
           </div>
         )}
 
+        {/* Career Backup Controls */}
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            onClick={handleExportBackup}
+            className="btn-secondary"
+            style={{ padding: '7px 10px', fontSize: '0.72rem', gap: '6px' }}
+            title="Scarica un file JSON con l'intera carriera attuale"
+          >
+            <Download size={13} />
+            Esporta Salvataggio
+          </button>
+          <button
+            onClick={handleImportClick}
+            className="btn-secondary"
+            style={{ padding: '7px 10px', fontSize: '0.72rem', gap: '6px' }}
+            title="Carica un file JSON di backup esportato in precedenza"
+          >
+            <Upload size={13} />
+            Carica Salvataggio
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={handleFileSelected}
+            style={{ display: 'none' }}
+          />
+
+          {backupMessage && (
+            <div style={{
+              position: 'absolute',
+              top: 'calc(100% + 8px)',
+              right: 0,
+              minWidth: '260px',
+              maxWidth: '340px',
+              padding: '8px 12px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.72rem',
+              lineHeight: 1.35,
+              zIndex: 210,
+              border: `1px solid ${backupMessage.type === 'success' ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)'}`,
+              background: backupMessage.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+              color: backupMessage.type === 'success' ? 'var(--color-pitch)' : 'var(--color-danger)'
+            }}>
+              {backupMessage.text}
+            </div>
+          )}
+        </div>
+
         {/* Notifications Icon & Dropdown */}
         <div style={{ position: 'relative' }}>
           <button
             onClick={() => setShowNotifications(!showNotifications)}
+            aria-label="Notifiche"
             style={{
               background: 'none',
               border: 'none',

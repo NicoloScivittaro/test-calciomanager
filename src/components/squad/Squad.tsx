@@ -1,11 +1,38 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, X, Award, UserMinus, Calendar, ShieldCheck, Dumbbell, Brain, HeartHandshake } from 'lucide-react';
-import { ClubHistoryState, Player, PlayerRole, PlayerSeasonStat } from '../../types';
-import { getPlayerFitnessStatus } from '../../utils/playerFitness';
+import { Search, X, Award, UserMinus, Calendar, ShieldCheck, Dumbbell, Brain, HeartHandshake, Radio, TrendingUp } from 'lucide-react';
+import { CareerWorldState, ClubHistoryState, ClubProfile, ClubStaffState, Player, PlayerClubHistoryEntry, PlayerConversationState, PlayerPublicProfile, PlayerRole, PlayerSeasonStat, TrainingFocus, TrainingIntensity } from '../../types';
+import {
+  ApplySignedContractInput,
+  applySignedContract,
+  buildInitialPlayerContract,
+  calculateClubWageBudget,
+  CONTRACT_SQUAD_ROLE_LABELS,
+  getContractStatusLabel,
+  toAnnualSalary
+} from '../../utils/playerContracts';
+import ContractRenewalModal from '../common/ContractRenewalModal';
+import YouthAcademyModal from '../common/YouthAcademyModal';
+import { getActiveYouthPlayers } from '../../utils/youthAcademy';
+import { getManagedReturnRecommendation, getPlayerAvailabilitySummary, getPlayerFitnessStatus, INJURY_BODY_AREA_LABELS, INJURY_TYPE_LABELS } from '../../utils/playerFitness';
+import {
+  DEVELOPMENT_STAGE_LABELS,
+  DEVELOPMENT_TREND_LABELS,
+  ROLE_FAMILIARITY_STATUS_LABELS,
+  TRAINING_FOCUS_LABELS,
+  TRAINING_INTENSITY_LABELS,
+  TRAINING_PLAN_STATUS_LABELS,
+  getDevelopmentSummary,
+  getRoleFamiliarityEntry,
+  setPlayerTrainingFocus
+} from '../../utils/playerDevelopment';
 import { getPersonalityArchetype, getPersonalityShortNote } from '../../utils/playerPersonality';
 import { getPlayerProjectRole, getProjectRoleColor } from '../../utils/playerProjectRole';
+import { formatFollowersEstimate } from '../../utils/emotionalNarratives';
+import { getPlayerRoleAttributes } from '../../utils/playerAttributes';
 import PlayerProfileModal from '../common/PlayerProfileModal';
+import PlayerConversationModal from '../common/PlayerConversationModal';
+import { ModalPortal, useModalBehavior } from '../common/BaseModal';
 
 interface SquadProps {
   players: Player[];
@@ -18,11 +45,34 @@ interface SquadProps {
   playerStats: PlayerSeasonStat[];
   clubHistory: ClubHistoryState;
   currentRound: number;
+  playerPublicProfiles?: PlayerPublicProfile[];
+  onCreatePlayingTimePromise?: (playerId: string, targetMinutes: number) => void;
+  playerConversations?: PlayerConversationState;
+  setPlayerConversations?: React.Dispatch<React.SetStateAction<PlayerConversationState>>;
+  clubStaffState?: ClubStaffState;
+  clubProfile: ClubProfile;
+  careerWorld: CareerWorldState;
+  setCareerWorld: React.Dispatch<React.SetStateAction<CareerWorldState>>;
+  budget: number;
+  setBudget: (b: number) => void;
+  teamName: string;
+  onPromoteYouthPlayer: (player: Player) => void;
+  onReleaseYouthPlayer: (player: Player) => void;
 }
 
 type SortField = 'name' | 'role' | 'age' | 'overall' | 'form' | 'morale' | 'condition' | 'stamina' | 'value';
 
-export default function Squad({ players, updatePlayer, starters, setStarters, bench, setBench, setPlayers, playerStats, clubHistory, currentRound }: SquadProps) {
+const CAREER_TRANSFER_TYPE_LABELS: Record<string, string> = {
+  initial: 'Al club dall\'inizio della carriera',
+  purchase: 'Acquisto',
+  sale: 'Cessione',
+  loan: 'Prestito'
+};
+
+export default function Squad({ players, updatePlayer, starters, setStarters, bench, setBench, setPlayers, playerStats, clubHistory, currentRound, playerPublicProfiles = [], onCreatePlayingTimePromise, playerConversations, setPlayerConversations, clubStaffState, clubProfile, careerWorld, setCareerWorld, budget, setBudget, teamName, onPromoteYouthPlayer, onReleaseYouthPlayer }: SquadProps) {
+  const [chatPlayer, setChatPlayer] = useState<Player | null>(null);
+  const [renewingPlayer, setRenewingPlayer] = useState<Player | null>(null);
+  const [showYouthAcademyModal, setShowYouthAcademyModal] = useState(false);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'STARTER' | 'INJURED' | 'SALE'>('ALL');
@@ -30,9 +80,23 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [playerSheetMode, setPlayerSheetMode] = useState<'quick' | 'full'>('quick');
-  const [teamTrainingFocus, setTeamTrainingFocus] = useState<'Forma' | 'Fisico' | 'Tecnica'>('Forma');
+  useModalBehavior(!!selectedPlayer && playerSheetMode === 'full', () => setSelectedPlayer(null));
+  const [teamTrainingFocus, setTeamTrainingFocus] = useState<TrainingFocus>('balanced');
+  const [teamTrainingIntensity, setTeamTrainingIntensity] = useState<TrainingIntensity>('normal');
+  const [individualFocus, setIndividualFocus] = useState<TrainingFocus>('balanced');
+  const [individualIntensity, setIndividualIntensity] = useState<TrainingIntensity>('normal');
   const [positionTarget, setPositionTarget] = useState<PlayerRole>('CM');
   const roleContext = { starters, bench, seasonStats: playerStats, clubHistory, round: currentRound };
+
+  // Il selettore del piano individuale riflette il piano gia' impostato per il giocatore aperto.
+  useEffect(() => {
+    if (!selectedPlayer) return;
+    if (selectedPlayer.trainingPlan) {
+      setIndividualFocus(selectedPlayer.trainingPlan.focus);
+      setIndividualIntensity(selectedPlayer.trainingPlan.intensity);
+    }
+    if (selectedPlayer.trainingPlan?.targetRole) setPositionTarget(selectedPlayer.trainingPlan.targetRole);
+  }, [selectedPlayer?.id]);
 
   // Formatting currency
   const formatCurrency = (val: number) => {
@@ -73,6 +137,13 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
     );
   };
 
+  const infoTileLike = (label: string, value: React.ReactNode, color = 'var(--text-primary)') => (
+    <div key={label} style={{ padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'rgba(26,33,42,0.25)' }}>
+      <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)' }}>{label}</span>
+      <strong style={{ display: 'block', marginTop: '3px', color }}>{value}</strong>
+    </div>
+  );
+
   // Sort & Filter logic
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -83,7 +154,10 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
     }
   };
 
-  const filteredPlayers = players.filter(player => {
+  // Fase 9: la rosa prima squadra non mescola mai i prospetti non promossi (assente = 'first_team').
+  const firstTeamRoster = players.filter(player => (player.squadStatus ?? 'first_team') === 'first_team');
+
+  const filteredPlayers = firstTeamRoster.filter(player => {
     const matchesSearch = player.name.toLowerCase().includes(search.toLowerCase());
     
     let matchesRole = true;
@@ -118,7 +192,7 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
 
   const openPlayerSheet = (player: Player) => {
     setSelectedPlayer(player);
-    setPlayerSheetMode('quick');
+    setPlayerSheetMode('full');
   };
 
   const toggleStarter = (player: Player) => {
@@ -138,129 +212,47 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
     }
   };
 
-  const trainIndividual = (player: Player, focus: 'overall' | 'position') => {
-    const projectRole = getPlayerProjectRole(player, roleContext);
-    const youthBonus = player.age <= 21 ? 1.55 : player.age <= 24 ? 1.3 : player.age <= 28 ? 1 : 0.68;
-    const projectGrowth = 1 + projectRole.growthModifier + (projectRole.trust - projectRole.tension) * 0.002;
-    const conditionCost = focus === 'position' ? 8 : 6;
+  // Rinnovo: sostituisce il contratto solo dopo conferma esplicita, scala bonus firma/agente una
+  // sola volta dal budget trasferimenti e aggiorna subito il monte ingaggi (sempre ricalcolato dal
+  // roster reale, mai incrementato/decrementato a mano: nessun rischio di doppio conteggio).
+  const handleConfirmRenewal = (player: Player, input: ApplySignedContractInput) => {
+    const oneOffCost = (input.signingBonus ?? 0) + (input.agentFee ?? 0);
+    const renewedPlayer = applySignedContract(player, clubProfile, input, careerWorld.clubWageBudgetState.season, true);
+    const updatedPlayers = players.map(p => (p.id === player.id ? renewedPlayer : p));
+    setPlayers(updatedPlayers);
+    setBudget(Math.max(0, budget - oneOffCost));
+    setCareerWorld(current => ({
+      ...current,
+      clubWageBudgetState: {
+        ...calculateClubWageBudget(updatedPlayers, clubProfile, current.clubWageBudgetState.season, current.clubWageBudgetState),
+        transferOneOffCostsThisSeason: current.clubWageBudgetState.transferOneOffCostsThisSeason + oneOffCost
+      }
+    }));
+    setRenewingPlayer(null);
+    setSelectedPlayer(null);
+  };
 
-    if (focus === 'overall') {
-      const canGrow = player.overall < player.potential;
-      const gainChance = Math.min(0.88, Math.max(0.05, (0.28 * youthBonus + Math.max(0, player.potential - player.overall) * 0.06) * projectGrowth));
-      const improves = canGrow && Math.random() < gainChance;
-      const updated = {
-        ...player,
-        overall: improves ? player.overall + 1 : player.overall,
-        form: Number(Math.min(10, player.form + 0.2 * youthBonus * Math.max(0.65, projectGrowth)).toFixed(1)),
-        morale: Math.min(100, player.morale + (improves ? 5 : 2) + (projectRole.trust >= 70 ? 1 : 0)),
-        condition: Math.max(35, player.condition - conditionCost),
-        value: improves ? Math.round(player.value * 1.04) : player.value,
-        status: player.condition - conditionCost < 60 ? 'Stanco' as const : player.status
-      };
-      updatePlayer(updated);
-      setSelectedPlayer(updated);
-      return;
-    }
-
-    if (player.role === 'GK') {
-      alert('I portieri mantengono allenamento specifico: non possono imparare ruoli di movimento.');
-      return;
-    }
-    if (positionTarget === player.role || player.secondaryRoles?.includes(positionTarget)) return;
-    const current = player.positionTraining?.[positionTarget] ?? 0;
-    const progressGain = Math.round(((player.age <= 21 ? 28 : player.age <= 24 ? 22 : player.age <= 28 ? 16 : 11) + Math.random() * 8) * Math.max(0.55, projectGrowth));
-    const nextProgress = Math.min(100, current + progressGain);
-    const learned = nextProgress >= 100;
-    const updated = {
-      ...player,
-      secondaryRoles: learned ? Array.from(new Set([...(player.secondaryRoles ?? []), positionTarget])) : player.secondaryRoles,
-      positionTraining: {
-        ...(player.positionTraining ?? {}),
-        [positionTarget]: learned ? 100 : nextProgress
-      },
-      morale: Math.min(100, player.morale + (learned ? 6 : 2)),
-      condition: Math.max(35, player.condition - conditionCost),
-      status: player.condition - conditionCost < 60 ? 'Stanco' as const : player.status
-    };
+  // Il piano di allenamento non da MAI un effetto immediato: imposta solo focus/intensita/ruolo
+  // obiettivo. I risultati arrivano nel tempo tramite advancePlayerDevelopmentCycle (post-partita).
+  const applyIndividualPlan = (player: Player) => {
+    const updated = setPlayerTrainingFocus(player, {
+      focus: individualFocus,
+      intensity: individualIntensity,
+      targetRole: individualFocus === 'role_learning' ? positionTarget : undefined
+    }, currentRound);
     updatePlayer(updated);
     setSelectedPlayer(updated);
   };
 
-  const runTeamTraining = () => {
-    const trained = players.map(player => {
-      const projectRole = getPlayerProjectRole(player, roleContext);
-      const projectGrowth = 1 + projectRole.growthModifier + (projectRole.trust - projectRole.tension) * 0.0015;
-      const youthBonus = player.age <= 23 ? 1.25 : player.age <= 28 ? 1 : 0.75;
-      const formGain = teamTrainingFocus === 'Forma' ? 0.25 * youthBonus * Math.max(0.65, projectGrowth) : 0.08;
-      const moraleGain = teamTrainingFocus === 'Tecnica' ? 2 : 1;
-      const conditionChange = teamTrainingFocus === 'Fisico' ? 3 : -4;
-      const canImprove = teamTrainingFocus === 'Tecnica' && player.overall < player.potential && Math.random() < Math.max(0.02, 0.08 * youthBonus * projectGrowth);
-
-      return {
-        ...player,
-        overall: canImprove ? player.overall + 1 : player.overall,
-        form: Number(Math.min(10, player.form + formGain).toFixed(1)),
-        morale: Math.min(100, Math.max(0, player.morale + moraleGain + (projectRole.tension >= 75 ? -1 : projectRole.trust >= 72 ? 1 : 0))),
-        condition: Math.max(40, Math.min(100, player.condition + conditionChange)),
-        value: canImprove ? Math.round(player.value * 1.03) : player.value,
-        status: player.condition + conditionChange < 60 ? 'Stanco' as const : player.condition + conditionChange >= 85 && player.status === 'Stanco' ? 'Disponibile' as const : player.status
-      };
-    });
-    setPlayers(trained);
-    if (selectedPlayer) setSelectedPlayer(trained.find(player => player.id === selectedPlayer.id) ?? selectedPlayer);
+  const applyTeamTrainingPlan = () => {
+    const updated = players.map(player => setPlayerTrainingFocus(player, { focus: teamTrainingFocus, intensity: teamTrainingIntensity }, currentRound));
+    setPlayers(updated);
+    if (selectedPlayer) setSelectedPlayer(updated.find(player => player.id === selectedPlayer.id) ?? selectedPlayer);
   };
 
-  // Prefer detailed Excel attributes; fall back to role-based generated values for older rosters.
-  const getAttributes = (player: Player) => {
-    const sourceAttributes = Object.entries(player.attributes ?? {})
-      .filter(([, value]) => Number.isFinite(value))
-      .map(([label, val]) => ({ label, val }));
-
-    if (sourceAttributes.length) return sourceAttributes;
-
-    const isGK = player.role === 'GK';
-    const isDF = ['CB', 'LB', 'RB'].includes(player.role);
-    const isMF = ['DM', 'CM', 'AM'].includes(player.role);
-    
-    // Generate realistic sub-attributes
-    if (isGK) {
-      return [
-        { label: 'Riflessi', val: player.overall + 3 },
-        { label: 'Presa', val: player.overall - 1 },
-        { label: 'Rinvio', val: player.overall - 4 },
-        { label: 'Piazzamento', val: player.overall },
-        { label: 'Uscite', val: player.overall - 2 },
-        { label: 'Presenza Fisica', val: player.overall - 3 }
-      ];
-    } else if (isDF) {
-      return [
-        { label: 'Velocità', val: player.overall - 6 },
-        { label: 'Forza', val: player.overall + 5 },
-        { label: 'Marcatura', val: player.overall + 2 },
-        { label: 'Scivolata', val: player.overall + 1 },
-        { label: 'Colpo di Testa', val: player.overall + 4 },
-        { label: 'Passaggio', val: player.overall - 10 }
-      ];
-    } else if (isMF) {
-      return [
-        { label: 'Velocità', val: player.overall - 2 },
-        { label: 'Resistenza', val: player.overall + 6 },
-        { label: 'Pass. Corto', val: player.overall + 4 },
-        { label: 'Pass. Lungo', val: player.overall + 2 },
-        { label: 'Visione', val: player.overall + 1 },
-        { label: 'Dribbling', val: player.overall - 1 }
-      ];
-    } else { // FW / ST
-      return [
-        { label: 'Velocità', val: player.overall + 5 },
-        { label: 'Dribbling', val: player.overall + 3 },
-        { label: 'Tiro', val: player.overall + 4 },
-        { label: 'Colpo di Testa', val: player.overall - 4 },
-        { label: 'Posizionamento', val: player.overall + 2 },
-        { label: 'Forza', val: player.overall - 5 }
-      ];
-    }
-  };
+  // Griglia attributi canonica per famiglia di ruolo (stesso numero/ordine/significato per tutti i
+  // giocatori dello stesso ruolo): src/utils/playerAttributes.ts, riusata anche da PlayerProfileModal.
+  const getAttributes = getPlayerRoleAttributes;
 
   return (
     <div className="page-wrapper">
@@ -370,26 +362,39 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
             </button>
           ))}
         </div>
+
+        <button
+          onClick={() => setShowYouthAcademyModal(true)}
+          className="btn-secondary"
+          style={{ fontSize: '0.75rem', padding: '8px 14px' }}
+        >
+          Vivaio ({getActiveYouthPlayers(players, careerWorld.youthAcademyState).length})
+        </button>
       </div>
 
-      <div className="card-premium" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', marginBottom: '18px' }}>
+      <div className="card-premium" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', marginBottom: '18px', flexWrap: 'wrap' }}>
         <div>
           <h3 style={{ fontSize: '0.95rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Dumbbell size={16} style={{ color: 'var(--color-pitch)' }} />
-            Allenamento di Squadra
+            Piano di Squadra
           </h3>
           <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            Forma migliora il rendimento immediato, Fisico recupera condizione, Tecnica puo far crescere soprattutto i giovani.
+            Imposta il focus di lavoro per tutta la rosa: i risultati arrivano nel tempo con le partite, non subito.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <select value={teamTrainingFocus} onChange={e => setTeamTrainingFocus(e.target.value as typeof teamTrainingFocus)} style={selectStyle}>
-            <option value="Forma">Forma partita</option>
-            <option value="Fisico">Recupero fisico</option>
-            <option value="Tecnica">Tecnica e crescita</option>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <select value={teamTrainingFocus} onChange={e => setTeamTrainingFocus(e.target.value as TrainingFocus)} style={selectStyle}>
+            {(['balanced', 'technical', 'physical', 'defensive', 'attacking', 'mental', 'recovery'] as TrainingFocus[]).map(focus => (
+              <option key={focus} value={focus}>{TRAINING_FOCUS_LABELS[focus]}</option>
+            ))}
           </select>
-          <button className="btn-primary" onClick={runTeamTraining} style={{ justifyContent: 'center' }}>
-            Avvia seduta
+          <select value={teamTrainingIntensity} onChange={e => setTeamTrainingIntensity(e.target.value as TrainingIntensity)} style={selectStyle}>
+            {(['light', 'normal', 'high'] as TrainingIntensity[]).map(intensity => (
+              <option key={intensity} value={intensity}>{TRAINING_INTENSITY_LABELS[intensity]}</option>
+            ))}
+          </select>
+          <button className="btn-primary" onClick={applyTeamTrainingPlan} style={{ justifyContent: 'center' }}>
+            Applica alla rosa
           </button>
         </div>
       </div>
@@ -411,12 +416,19 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
               <th onClick={() => handleSort('stamina')}>Res.</th>
               <th onClick={() => handleSort('value')}>Valore</th>
               <th style={{ textAlign: 'center' }}>Stato</th>
+              <th style={{ textAlign: 'center' }}>Disponibilità</th>
+              <th style={{ textAlign: 'center' }}>Contratto</th>
             </tr>
           </thead>
           <tbody>
             {filteredPlayers.map((player) => {
               const isStarter = starters.includes(player.id);
               const fitness = getPlayerFitnessStatus(player);
+              const availability = getPlayerAvailabilitySummary(player, currentRound);
+              const availabilityColor =
+                availability.label === 'Disponibile' ? 'var(--color-pitch)' :
+                availability.label === 'Indisponibile' ? 'var(--color-danger)' :
+                'var(--color-gold)';
               const projectRole = getPlayerProjectRole(player, roleContext);
               const projectRoleColor = getProjectRoleColor(projectRole);
               
@@ -541,6 +553,39 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                       {player.status}
                     </span>
                   </td>
+                  <td style={{ textAlign: 'center' }}>
+                    <span
+                      title={availability.reasons[0]}
+                      style={{
+                        display: 'inline-block',
+                        width: '110px',
+                        textAlign: 'center',
+                        fontSize: '0.66rem',
+                        fontWeight: 800,
+                        padding: '3px 6px',
+                        borderRadius: '999px',
+                        color: availabilityColor,
+                        border: `1px solid ${availabilityColor}`,
+                        background: 'rgba(26,33,42,0.42)'
+                      }}
+                    >
+                      {availability.label}
+                    </span>
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                    {(() => {
+                      const contract = player.contract ?? buildInitialPlayerContract(player, clubProfile, careerWorld.clubWageBudgetState.season);
+                      const statusLabel = getContractStatusLabel(contract);
+                      const statusColor = statusLabel === 'In scadenza' ? 'var(--color-danger)' : statusLabel === 'Da monitorare' ? 'var(--color-gold)' : 'var(--color-pitch)';
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center', fontSize: '0.64rem' }}>
+                          <strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(contract.annualSalary)}/anno</strong>
+                          <span style={{ color: 'var(--text-muted)' }}>{contract.durationYears} anni · {CONTRACT_SQUAD_ROLE_LABELS[contract.squadRole]}</span>
+                          <span style={{ color: statusColor, fontWeight: 800 }}>{statusLabel}</span>
+                        </div>
+                      );
+                    })()}
+                  </td>
                 </tr>
               );
             })}
@@ -559,10 +604,34 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
         playerStats={playerStats}
         clubHistory={clubHistory}
         currentRound={currentRound}
+        playerPublicProfiles={playerPublicProfiles}
         contextLabel="Scheda rapida rosa"
+        onCreatePlayingTimePromise={onCreatePlayingTimePromise}
+        playerConversations={playerConversations}
+        onOpenConversation={setPlayerConversations ? setChatPlayer : undefined}
+        clubStaffState={clubStaffState}
+        clubProfile={clubProfile}
+        onRenewContract={setRenewingPlayer}
       />
 
+      {chatPlayer && playerConversations && setPlayerConversations && (
+        <PlayerConversationModal
+          player={chatPlayer}
+          playerStats={playerStats}
+          clubHistory={clubHistory}
+          currentRound={currentRound}
+          conversationState={playerConversations}
+          setConversationState={setPlayerConversations}
+          onApplyMoraleDelta={(playerId, delta) => {
+            const target = players.find(p => p.id === playerId);
+            if (target) updatePlayer({ ...target, morale: Math.max(0, Math.min(100, target.morale + delta)) });
+          }}
+          onClose={() => setChatPlayer(null)}
+        />
+      )}
+
       {/* Roster Drawer Details Panel */}
+      <ModalPortal>
       <AnimatePresence>
         {selectedPlayer && playerSheetMode === 'full' && (
           <div className="drawer-backdrop player-fullscreen-backdrop" onClick={() => setSelectedPlayer(null)}>
@@ -589,6 +658,7 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                 </button>
                 <button
                   onClick={() => setSelectedPlayer(null)}
+                  aria-label="Chiudi scheda giocatore"
                   style={{
                     background: 'none',
                     border: 'none',
@@ -663,6 +733,32 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                             </span>
                           ))}
                         </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {(() => {
+                  const publicProfile = playerPublicProfiles.find(profile => profile.playerId === selectedPlayer.id);
+                  if (!publicProfile) return null;
+                  return (
+                    <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <h4 style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Radio size={14} style={{ color: '#FB7185' }} />
+                        Impatto pubblico
+                      </h4>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        {traitBar('Popolarità', publicProfile.popularity)}
+                        {traitBar('Attenzione media', publicProfile.mediaAttention)}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        <span>Seguito stimato: <strong>{formatFollowersEstimate(publicProfile.followersEstimate)}</strong></span>
+                        <span>Status: <strong>{publicProfile.narrativeTitles[0] ?? 'nessuna storia attiva'}</strong></span>
+                      </div>
+                      {publicProfile.iconicMoments[0] && (
+                        <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', lineHeight: 1.35 }}>
+                          Momento iconico più recente: {publicProfile.iconicMoments[0].description}
+                        </p>
                       )}
                     </div>
                   );
@@ -764,6 +860,45 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                   })()}
                 </div>
 
+                <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {(() => {
+                    const availability = getPlayerAvailabilitySummary(selectedPlayer, currentRound);
+                    const managedReturnNote = getManagedReturnRecommendation(selectedPlayer);
+                    const availabilityColor =
+                      availability.label === 'Disponibile' ? 'var(--color-pitch)' :
+                      availability.label === 'Indisponibile' ? 'var(--color-danger)' :
+                      'var(--color-gold)';
+                    return (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                          <h4 style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-secondary)' }}>Condizione fisica</h4>
+                          <span style={{ border: `1px solid ${availabilityColor}`, borderRadius: '999px', padding: '4px 8px', fontSize: '0.66rem', fontWeight: 900, color: availabilityColor }}>
+                            {availability.label}
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                          {infoTileLike('Rischio', availability.riskLabel, availabilityColor)}
+                          {infoTileLike('Fase recupero', availability.recoveryPhaseLabel)}
+                          {infoTileLike('Carico 14gg', `${selectedPlayer.workload?.minutesLast14Days ?? 0}'`)}
+                          {infoTileLike('Freschezza', `${selectedPlayer.workload?.freshness ?? 100}%`)}
+                        </div>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.35 }}>{availability.prognosis}</p>
+                        {availability.reasons.map(reason => (
+                          <p key={reason} style={{ fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: 1.3 }}>- {reason}</p>
+                        ))}
+                        {managedReturnNote && (
+                          <p style={{ fontSize: '0.72rem', color: 'var(--color-gold)', lineHeight: 1.35 }}>{managedReturnNote}</p>
+                        )}
+                        {selectedPlayer.injuryStatus?.currentInjury && (
+                          <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.35 }}>
+                            {INJURY_TYPE_LABELS[selectedPlayer.injuryStatus.currentInjury.type]} ({INJURY_BODY_AREA_LABELS[selectedPlayer.injuryStatus.currentInjury.bodyArea]})
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+
                 {/* Sub-attributes breakdown list */}
                 <div>
                   <h4 style={{ fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -857,53 +992,184 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                 {/* Contract Info */}
                 <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)' }}>Contratto Attuale</h4>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Valore di Mercato:</span>
-                    <strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(selectedPlayer.value)}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Stipendio Settimanale:</span>
-                    <strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(selectedPlayer.wage)}/sett</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Scadenza Contratto:</span>
-                    <strong style={{ color: 'var(--text-primary)' }}>{selectedPlayer.contractYears} anni rimasti</strong>
-                  </div>
+                  {(() => {
+                    const contract = selectedPlayer.contract ?? buildInitialPlayerContract(selectedPlayer, clubProfile, careerWorld.clubWageBudgetState.season);
+                    const statusLabel = getContractStatusLabel(contract);
+                    return (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Valore di Mercato:</span>
+                          <strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(selectedPlayer.value)}</strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Stipendio annuo:</span>
+                          <strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(contract.annualSalary)}/anno</strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Scadenza Contratto:</span>
+                          <strong style={{ color: 'var(--text-primary)' }}>{contract.durationYears} anni rimasti ({contract.endSeason})</strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Ruolo contrattuale:</span>
+                          <strong style={{ color: 'var(--text-primary)' }}>{CONTRACT_SQUAD_ROLE_LABELS[contract.squadRole]}</strong>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Situazione:</span>
+                          <strong style={{ color: statusLabel === 'In scadenza' ? 'var(--color-danger)' : statusLabel === 'Da monitorare' ? 'var(--color-gold)' : 'var(--color-pitch)' }}>{statusLabel}</strong>
+                        </div>
+                        {contract.releaseClause && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                            <span style={{ color: 'var(--text-secondary)' }}>Clausola rescissoria:</span>
+                            <strong style={{ color: 'var(--text-primary)' }}>{formatCurrency(contract.releaseClause)}</strong>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* Career History */}
+                <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Calendar size={14} />
+                    Carriera nel salvataggio
+                  </h4>
+                  {(() => {
+                    const careerEntries = [...(selectedPlayer.clubHistory ?? [])].reverse();
+                    const renderEntry = (entry: PlayerClubHistoryEntry, index: number) => (
+                      <div key={`${entry.clubId}_${entry.joinedSeason}_${index}`} style={{ border: '1px solid var(--border-light)', borderRadius: '8px', padding: '8px 10px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'baseline' }}>
+                          <strong style={{ fontSize: '0.78rem' }}>{entry.clubName}</strong>
+                          <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>{entry.joinedSeason} — {entry.leftSeason ?? 'Oggi'}</span>
+                        </div>
+                        {entry.transferType !== 'initial' && (
+                          <span style={{ display: 'block', marginTop: '3px', fontSize: '0.66rem', color: 'var(--text-muted)' }}>
+                            {CAREER_TRANSFER_TYPE_LABELS[entry.transferType]}{entry.fee !== undefined ? `: ${formatCurrency(entry.fee)}` : ''}
+                          </span>
+                        )}
+                      </div>
+                    );
+
+                    if (careerEntries.length <= 1) {
+                      return <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Al club dall'inizio della carriera.</p>;
+                    }
+                    if (careerEntries.length > 4) {
+                      return (
+                        <details>
+                          <summary style={{ cursor: 'pointer', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{careerEntries.length} squadre nel salvataggio</summary>
+                          <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {careerEntries.map(renderEntry)}
+                          </div>
+                        </details>
+                      );
+                    }
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {careerEntries.map(renderEntry)}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Dumbbell size={14} />
-                    Allenamento Individuale
+                    Piano di allenamento
                   </h4>
                   <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.35 }}>
-                    I giovani apprendono piu velocemente. Un nuovo ruolo diventa utile in partita quando arriva al 100%.
+                    Qui imposti solo l'obiettivo di lavoro: i miglioramenti arrivano lentamente con partite e continuita', non al click.
                   </p>
-                  <button className="btn-secondary" onClick={() => trainIndividual(selectedPlayer, 'overall')} style={{ justifyContent: 'center' }}>
-                    Migliora tecnica/overall
-                  </button>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px', alignItems: 'end' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                     <div>
-                      <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Nuova posizione</label>
+                      <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Focus</label>
+                      <select value={individualFocus} onChange={e => setIndividualFocus(e.target.value as TrainingFocus)} style={selectStyle}>
+                        {(['balanced', 'technical', 'physical', 'defensive', 'attacking', 'mental', 'role_learning', 'recovery'] as TrainingFocus[]).map(focus => (
+                          <option key={focus} value={focus}>{TRAINING_FOCUS_LABELS[focus]}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Intensita'</label>
+                      <select value={individualIntensity} onChange={e => setIndividualIntensity(e.target.value as TrainingIntensity)} style={selectStyle}>
+                        {(['light', 'normal', 'high'] as TrainingIntensity[]).map(intensity => (
+                          <option key={intensity} value={intensity}>{TRAINING_INTENSITY_LABELS[intensity]}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  {individualFocus === 'role_learning' && (
+                    <div>
+                      <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Ruolo obiettivo</label>
                       <select value={positionTarget} onChange={e => setPositionTarget(e.target.value as PlayerRole)} style={selectStyle}>
-                        {(['CB', 'LB', 'RB', 'DM', 'CM', 'AM', 'LW', 'RW', 'ST'] as PlayerRole[]).map(role => (
+                        {(['GK', 'CB', 'LB', 'RB', 'DM', 'CM', 'AM', 'LW', 'RW', 'ST'] as PlayerRole[]).filter(role => role !== selectedPlayer.role).map(role => (
                           <option key={role} value={role}>{role}</option>
                         ))}
                       </select>
                     </div>
-                    <button className="btn-primary" onClick={() => trainIndividual(selectedPlayer, 'position')} style={{ justifyContent: 'center' }}>
-                      Allena
-                    </button>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                      Ruoli secondari: <strong>{selectedPlayer.secondaryRoles?.join(', ') || 'nessuno'}</strong>
-                    </span>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                      Progresso {positionTarget}: <strong style={{ color: 'var(--color-lime)' }}>{selectedPlayer.positionTraining?.[positionTarget] ?? 0}%</strong>
-                    </span>
-                  </div>
+                  )}
+                  <button className="btn-primary" onClick={() => applyIndividualPlan(selectedPlayer)} style={{ justifyContent: 'center' }}>
+                    Salva piano
+                  </button>
+                  {selectedPlayer.trainingPlan && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingTop: '4px', borderTop: '1px solid var(--border-light)' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        Stato: <strong>{TRAINING_PLAN_STATUS_LABELS[selectedPlayer.trainingPlan.status]}</strong> · Adesione al piano: <strong style={{ color: 'var(--color-lime)' }}>{selectedPlayer.trainingPlan.progress}%</strong> · Sviluppo reale: <strong style={{ color: 'var(--color-pitch)' }}>{selectedPlayer.trainingPlan.developmentProgress}%</strong>
+                      </span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                        L'adesione riflette solo la costanza; lo sviluppo reale richiede settimane di continuità.
+                      </span>
+                      {selectedPlayer.trainingPlan.notes[0] && (
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{selectedPlayer.trainingPlan.notes[0]}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
+
+                <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {(() => {
+                    const development = getDevelopmentSummary(selectedPlayer);
+                    return (
+                      <>
+                        <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <TrendingUp size={14} />
+                          Sviluppo
+                        </h4>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {infoTileLike('Fase carriera', development.stageLabel)}
+                          {infoTileLike('Trend', development.trendLabel, development.trendLabel === 'In crescita' ? 'var(--color-pitch)' : development.trendLabel === 'In calo' ? 'var(--color-danger)' : 'var(--text-primary)')}
+                          {infoTileLike('Potenziale stimato', `${development.potentialLevel} (${development.potentialRangeLabel})`)}
+                          {infoTileLike('Sviluppo stagionale', `+${development.seasonGrowth} / -${development.seasonDecline}`)}
+                        </div>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.35 }}>{development.explanation}</p>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {selectedPlayer.trainingPlan?.focus === 'role_learning' && selectedPlayer.trainingPlan.targetRole && (
+                  <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {(() => {
+                      const target = selectedPlayer.trainingPlan!.targetRole!;
+                      const entry = getRoleFamiliarityEntry(selectedPlayer, target);
+                      return (
+                        <>
+                          <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)' }}>Apprendimento ruolo: {target}</h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            {infoTileLike('Familiarita\'', `${Math.round(entry.familiarity)}/100`)}
+                            {infoTileLike('Stato', ROLE_FAMILIARITY_STATUS_LABELS[entry.status])}
+                            {infoTileLike('Minuti nel ruolo', `${entry.matchMinutesInRole}'`)}
+                            {infoTileLike('Progresso ruolo', `${Math.round(entry.trainingProgress)}%`)}
+                          </div>
+                          <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.35 }}>
+                            {entry.status === 'natural' || entry.status === 'competent' ? 'Sta diventando utilizzabile.' :
+                              entry.status === 'usable' ? 'Serve ancora esperienza in campo.' :
+                              'Conversione complessa: progresso lento.'}
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
 
               </div>
 
@@ -923,17 +1189,12 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                 </button>
 
                 <button
-                  onClick={() => {
-                    const newYears = selectedPlayer.contractYears + 2;
-                    const newWage = Math.round(selectedPlayer.wage * 1.1);
-                    updatePlayer({ ...selectedPlayer, contractYears: newYears, wage: newWage, morale: Math.min(selectedPlayer.morale + 15, 100) });
-                    setSelectedPlayer(null);
-                  }}
+                  onClick={() => setRenewingPlayer(selectedPlayer)}
                   className="btn-secondary"
                   style={{ justifyContent: 'center' }}
                 >
                   <Calendar size={16} />
-                  Rinnova Contratto (+2 Anni, +10% stipendio)
+                  Rinnova contratto
                 </button>
 
                 <button
@@ -954,6 +1215,33 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
           </div>
         )}
       </AnimatePresence>
+      </ModalPortal>
+      {renewingPlayer && (
+        <ContractRenewalModal
+          player={renewingPlayer}
+          club={clubProfile}
+          wageBudget={careerWorld.clubWageBudgetState}
+          transferBudget={budget}
+          season={careerWorld.clubWageBudgetState.season}
+          highestSquadAnnualSalary={Math.max(0, ...players.map(p => p.contract?.annualSalary ?? toAnnualSalary(p.wage)))}
+          starters={starters}
+          bench={bench}
+          currentRound={currentRound}
+          onClose={() => setRenewingPlayer(null)}
+          onConfirm={input => handleConfirmRenewal(renewingPlayer, input)}
+        />
+      )}
+      {showYouthAcademyModal && (
+        <YouthAcademyModal
+          players={players}
+          youthAcademyState={careerWorld.youthAcademyState}
+          clubStaffState={careerWorld.clubStaffState}
+          clubFacilitiesState={careerWorld.clubFacilitiesState}
+          onClose={() => setShowYouthAcademyModal(false)}
+          onPromote={onPromoteYouthPlayer}
+          onRelease={onReleaseYouthPlayer}
+        />
+      )}
     </div>
   );
 }

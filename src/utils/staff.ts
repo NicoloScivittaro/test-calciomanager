@@ -1,4 +1,18 @@
-import { ClubHistoryState, ClubProfile, Player, StaffAdvice, StaffMember, Tactic, TeamDNAState } from '../types';
+import {
+  ClubHistoryState,
+  ClubProfile,
+  ClubStaffMember,
+  ClubStaffReport,
+  ClubStaffRole,
+  ClubStaffState,
+  ClubStaffWorkStyle,
+  Negotiation,
+  Player,
+  StaffAdvice,
+  StaffMember,
+  Tactic,
+  TeamDNAState
+} from '../types';
 
 interface StaffAdviceContext {
   club: ClubProfile;
@@ -261,4 +275,484 @@ export const getStaffAdvisories = (context: StaffAdviceContext): StaffAdvice[] =
   }
 
   return advice.sort((a, b) => b.urgency - a.urgency).slice(0, 5);
+};
+
+// ─── Staff tecnico/atletico/medico/scouting persistente (Fase 8A) ───
+// Sistema separato dal consiglio "da presidenza" sopra: membri assumibili, persistenti,
+// che alimentano solo piccoli modificatori dei cicli gia' esistenti (fitness, sviluppo,
+// scouting). Nessun bonus immediato, nessuna modifica diretta di overall/potenziale/risultati.
+
+type ClubStaffSpecField =
+  | 'tacticalAnalysis'
+  | 'workloadManagement'
+  | 'injuryPrevention'
+  | 'rehabilitation'
+  | 'youthDevelopment'
+  | 'roleCoaching'
+  | 'scoutingAccuracy'
+  | 'marketKnowledge';
+
+const CLUB_STAFF_ROLES: ClubStaffRole[] = ['assistant_manager', 'fitness_coach', 'head_physio', 'development_coach', 'chief_scout'];
+
+export const CLUB_STAFF_ROLE_LABELS: Record<ClubStaffRole, string> = {
+  assistant_manager: 'Vice allenatore',
+  fitness_coach: 'Preparatore atletico',
+  head_physio: 'Capo staff medico',
+  development_coach: 'Allenatore dello sviluppo',
+  chief_scout: 'Capo scout'
+};
+
+const CLUB_STAFF_SPECS: Record<ClubStaffRole, ClubStaffSpecField[]> = {
+  assistant_manager: ['tacticalAnalysis'],
+  fitness_coach: ['workloadManagement', 'injuryPrevention'],
+  head_physio: ['rehabilitation', 'injuryPrevention'],
+  development_coach: ['youthDevelopment', 'roleCoaching'],
+  chief_scout: ['scoutingAccuracy', 'marketKnowledge']
+};
+
+const CLUB_STAFF_TRAIT_LABELS: Record<ClubStaffSpecField, string> = {
+  tacticalAnalysis: 'Analisi tattica',
+  workloadManagement: 'Gestione dei carichi',
+  injuryPrevention: 'Prevenzione infortuni',
+  rehabilitation: 'Riabilitazione',
+  youthDevelopment: 'Sviluppo giovani',
+  roleCoaching: 'Apprendimento ruoli',
+  scoutingAccuracy: 'Precisione scouting',
+  marketKnowledge: 'Conoscenza del mercato'
+};
+
+const CLUB_STAFF_WORK_STYLES: ClubStaffWorkStyle[] = ['balanced', 'demanding', 'protective', 'developmental'];
+
+const CLUB_STAFF_NAMES = [
+  'Enrico Bassi', 'Michele Farina', 'Cristian Loi', 'Nicola Bruno', 'Tommaso Rinaldi',
+  'Gabriele Testa', 'Lorenzo Sartori', 'Emanuele Colombo', 'Federico Gatti', 'Samuele Orlando',
+  'Vittorio Amato', 'Leonardo Fabbri', 'Stefano Villa', 'Claudio Moretti', 'Massimo Barbieri'
+];
+
+const clubStaffName = (club: ClubProfile, role: ClubStaffRole, index: number) => (
+  CLUB_STAFF_NAMES[Math.floor(hashRatio(`${club.id}-clubstaff-name-${role}-${index}`) * CLUB_STAFF_NAMES.length) % CLUB_STAFF_NAMES.length]
+);
+
+const pickWorkStyle = (seed: string): ClubStaffWorkStyle => (
+  CLUB_STAFF_WORK_STYLES[Math.floor(hashRatio(`${seed}-style`) * CLUB_STAFF_WORK_STYLES.length) % CLUB_STAFF_WORK_STYLES.length]
+);
+
+const seasonalCostForRole = (club: ClubProfile, overall: number): number => {
+  // Costo una tantum di ingaggio, scalato dal budget trasferimenti reale del club: nessuna
+  // economia parallela, e' la stessa cifra che gia' assorbe le operazioni di mercato.
+  const scaled = Math.max(club.transferBudget, 1000000) * 0.005 * (overall / 65);
+  return Math.round(clamp(scaled, 120000, 3500000) / 10000) * 10000;
+};
+
+export const buildClubStaffMember = (
+  club: ClubProfile,
+  role: ClubStaffRole,
+  season: string,
+  index: number
+): ClubStaffMember => {
+  const seed = `${club.id}-clubstaff-${role}-${index}`;
+  const overall = clamp(58 + seeded(seed, 'overall', -14, 24), 40, 92);
+  const specs: Partial<Record<ClubStaffSpecField, number>> = {};
+  CLUB_STAFF_SPECS[role].forEach((field, i) => {
+    specs[field] = clamp(overall + seeded(seed, `spec_${i}`, -10, 16), 35, 96);
+  });
+
+  return {
+    id: `cstaff_${club.id}_${role}_${index}`,
+    name: clubStaffName(club, role, index),
+    role,
+    overall,
+    workStyle: pickWorkStyle(seed),
+    reputation: clamp(overall + seeded(seed, 'reputation', -10, 10), 35, 95),
+    joinedSeason: season,
+    seasonalCost: seasonalCostForRole(club, overall),
+    ...specs
+  };
+};
+
+export const createInitialClubStaffState = (club: ClubProfile, season: string): ClubStaffState => ({
+  members: CLUB_STAFF_ROLES.map(role => buildClubStaffMember(club, role, season, 0)),
+  candidatePool: CLUB_STAFF_ROLES.flatMap(role => [0, 1].map(i => buildClubStaffMember(club, role, season, 100 + i))),
+  candidateGeneration: 0,
+  lastReviewRound: null,
+  lastHireRound: null,
+  lastReportRound: null,
+  recentReports: []
+});
+
+const VALID_CLUB_STAFF_ROLES = new Set<string>(CLUB_STAFF_ROLES);
+const VALID_WORK_STYLES = new Set<string>(CLUB_STAFF_WORK_STYLES);
+
+const normalizeClubStaffMember = (
+  raw: unknown,
+  club: ClubProfile,
+  season: string,
+  fallbackRole: ClubStaffRole,
+  fallbackIndex: number
+): ClubStaffMember => {
+  if (!raw || typeof raw !== 'object') return buildClubStaffMember(club, fallbackRole, season, fallbackIndex);
+  const item = raw as Record<string, unknown>;
+  const role = VALID_CLUB_STAFF_ROLES.has(item.role as string) ? item.role as ClubStaffRole : fallbackRole;
+  if (typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.overall !== 'number') {
+    return buildClubStaffMember(club, role, season, fallbackIndex);
+  }
+  const overall = Math.round(clamp(item.overall, 30, 99));
+  const specs: Partial<Record<ClubStaffSpecField, number>> = {};
+  CLUB_STAFF_SPECS[role].forEach(field => {
+    const value = item[field];
+    specs[field] = typeof value === 'number' ? Math.round(clamp(value, 20, 99)) : overall;
+  });
+
+  return {
+    id: item.id,
+    name: item.name,
+    role,
+    overall,
+    workStyle: VALID_WORK_STYLES.has(item.workStyle as string) ? item.workStyle as ClubStaffWorkStyle : pickWorkStyle(item.id),
+    reputation: typeof item.reputation === 'number' ? Math.round(clamp(item.reputation, 0, 100)) : 60,
+    joinedSeason: typeof item.joinedSeason === 'string' ? item.joinedSeason : season,
+    seasonalCost: typeof item.seasonalCost === 'number' ? Math.max(0, Math.round(item.seasonalCost)) : seasonalCostForRole(club, overall),
+    ...specs
+  };
+};
+
+const normalizeClubStaffReport = (raw: unknown): ClubStaffReport | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.id !== 'string' || typeof item.title !== 'string' || typeof item.detail !== 'string') return null;
+  if (!VALID_CLUB_STAFF_ROLES.has(item.role as string)) return null;
+  return {
+    id: item.id,
+    round: typeof item.round === 'number' ? item.round : 0,
+    season: typeof item.season === 'string' ? item.season : '',
+    role: item.role as ClubStaffRole,
+    staffName: typeof item.staffName === 'string' ? item.staffName : '',
+    playerId: typeof item.playerId === 'string' ? item.playerId : undefined,
+    playerName: typeof item.playerName === 'string' ? item.playerName : undefined,
+    title: item.title,
+    detail: item.detail,
+    createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString()
+  };
+};
+
+// Normalizzatore migration-safe: vecchi salvataggi senza staff operativo ricevono uno staff
+// base valido; salvataggi gia' aggiornati mantengono membri, candidati e report esistenti.
+export const normalizeClubStaffState = (value: unknown, club: ClubProfile, season: string): ClubStaffState => {
+  if (!value || typeof value !== 'object') return createInitialClubStaffState(club, season);
+  const raw = value as Record<string, unknown>;
+
+  const rawMembers = Array.isArray(raw.members) ? raw.members : [];
+  const memberByRole = new Map<ClubStaffRole, unknown>();
+  rawMembers.forEach(entry => {
+    if (entry && typeof entry === 'object' && VALID_CLUB_STAFF_ROLES.has((entry as Record<string, unknown>).role as string)) {
+      memberByRole.set((entry as Record<string, unknown>).role as ClubStaffRole, entry);
+    }
+  });
+  const members = CLUB_STAFF_ROLES.map(role => normalizeClubStaffMember(memberByRole.get(role), club, season, role, 0));
+
+  const generation = typeof raw.candidateGeneration === 'number' ? Math.max(0, Math.round(raw.candidateGeneration)) : 0;
+  const rawCandidates = Array.isArray(raw.candidatePool) ? raw.candidatePool : [];
+  const candidatesByRole = new Map<ClubStaffRole, unknown[]>();
+  rawCandidates.forEach(entry => {
+    if (entry && typeof entry === 'object' && VALID_CLUB_STAFF_ROLES.has((entry as Record<string, unknown>).role as string)) {
+      const role = (entry as Record<string, unknown>).role as ClubStaffRole;
+      const list = candidatesByRole.get(role) ?? [];
+      list.push(entry);
+      candidatesByRole.set(role, list);
+    }
+  });
+  const candidatePool = CLUB_STAFF_ROLES.flatMap(role => {
+    const existing = (candidatesByRole.get(role) ?? []).slice(0, 2)
+      .map((entry, i) => normalizeClubStaffMember(entry, club, season, role, 100 + generation * 10 + i));
+    while (existing.length < 2) {
+      existing.push(buildClubStaffMember(club, role, season, 100 + generation * 10 + existing.length));
+    }
+    return existing;
+  });
+
+  const recentReports = Array.isArray(raw.recentReports)
+    ? raw.recentReports.map(normalizeClubStaffReport).filter((r): r is ClubStaffReport => r !== null).slice(0, 12)
+    : [];
+
+  return {
+    members,
+    candidatePool,
+    candidateGeneration: generation,
+    lastReviewRound: typeof raw.lastReviewRound === 'number' ? raw.lastReviewRound : null,
+    lastHireRound: typeof raw.lastHireRound === 'number' ? raw.lastHireRound : null,
+    lastReportRound: typeof raw.lastReportRound === 'number' ? raw.lastReportRound : null,
+    recentReports
+  };
+};
+
+export const getClubStaffMember = (state: ClubStaffState, role: ClubStaffRole): ClubStaffMember | undefined => (
+  state.members.find(member => member.role === role)
+);
+
+// Massimo una sostituzione staff ogni 4 giornate.
+export const canHireClubStaff = (state: ClubStaffState, round: number): boolean => (
+  state.lastHireRound === null || round - state.lastHireRound >= 4
+);
+
+export const hireClubStaffMember = (
+  state: ClubStaffState,
+  club: ClubProfile,
+  role: ClubStaffRole,
+  candidateId: string,
+  round: number,
+  season: string
+): ClubStaffState => {
+  if (!canHireClubStaff(state, round)) return state;
+  const candidate = state.candidatePool.find(item => item.id === candidateId && item.role === role);
+  if (!candidate) return state;
+
+  const members = state.members.map(member => (member.role === role ? candidate : member));
+  const candidateGeneration = state.candidateGeneration + 1;
+  // Candidati rigenerati solo per il ruolo appena sostituito, con seed deterministico legato alla nuova generazione.
+  const refreshedForRole = [0, 1].map(i => buildClubStaffMember(club, role, season, 100 + candidateGeneration * 10 + i));
+  const candidatePool = state.candidatePool.filter(item => item.role !== role).concat(refreshedForRole);
+
+  return {
+    ...state,
+    members,
+    candidatePool,
+    candidateGeneration,
+    lastHireRound: round
+  };
+};
+
+export const describeStaffCandidateComparison = (current: ClubStaffMember | undefined, candidate: ClubStaffMember): string => {
+  if (!current) return `${candidate.name} entrerebbe come primo titolare del ruolo (qualita ${candidate.overall}).`;
+  const delta = candidate.overall - current.overall;
+  if (delta >= 4) return `${candidate.name} e valutato meglio di ${current.name} (${candidate.overall} contro ${current.overall}).`;
+  if (delta <= -4) return `${candidate.name} ha una valutazione piu bassa di ${current.name} (${candidate.overall} contro ${current.overall}), ma porta uno stile diverso (${candidate.workStyle}).`;
+  return `${candidate.name} e sostanzialmente equivalente a ${current.name} (${candidate.overall} contro ${current.overall}), con uno stile di lavoro ${candidate.workStyle}.`;
+};
+
+export interface ClubStaffSummary {
+  averageQuality: number;
+  strengths: string[]; // max 2
+  weaknesses: string[]; // max 2
+}
+
+export const getClubStaffSummary = (state: ClubStaffState): ClubStaffSummary => {
+  const averageQuality = state.members.length
+    ? Math.round(state.members.reduce((sum, member) => sum + member.overall, 0) / state.members.length)
+    : 60;
+
+  const traits: { label: string; value: number }[] = [];
+  state.members.forEach(member => {
+    CLUB_STAFF_SPECS[member.role].forEach(field => {
+      const value = member[field];
+      if (typeof value === 'number') traits.push({ label: `${CLUB_STAFF_TRAIT_LABELS[field]} (${member.name})`, value });
+    });
+  });
+
+  const strengths = [...traits].sort((a, b) => b.value - a.value).filter(t => t.value >= 72).slice(0, 2).map(t => t.label);
+  const weaknesses = [...traits].sort((a, b) => a.value - b.value).filter(t => t.value <= 48).slice(0, 2).map(t => t.label);
+
+  return { averageQuality, strengths, weaknesses };
+};
+
+export interface ClubStaffModifiers {
+  fitnessQuality: number; // gestione carichi + prevenzione infortuni
+  physioQuality: number; // riabilitazione + prevenzione infortuni
+  developmentQuality: number; // sviluppo giovani + apprendimento ruoli
+  scoutingQuality: number; // precisione scouting + conoscenza mercato
+  tacticalQuality: number; // analisi tattica del vice
+}
+
+const blendSpecs = (...values: (number | undefined)[]): number => {
+  const known = values.filter((v): v is number => typeof v === 'number');
+  if (!known.length) return 60;
+  return Math.round(known.reduce((sum, v) => sum + v, 0) / known.length);
+};
+
+// Espone modificatori piccoli e spiegabili da iniettare nei sistemi gia' esistenti
+// (fitness, sviluppo, scouting): non creano mai un effetto immediato, solo un input
+// aggiuntivo che i cicli esistenti applicano gradualmente.
+export const getClubStaffModifiers = (state: ClubStaffState): ClubStaffModifiers => {
+  const assistant = getClubStaffMember(state, 'assistant_manager');
+  const fitness = getClubStaffMember(state, 'fitness_coach');
+  const physio = getClubStaffMember(state, 'head_physio');
+  const development = getClubStaffMember(state, 'development_coach');
+  const scout = getClubStaffMember(state, 'chief_scout');
+
+  return {
+    fitnessQuality: blendSpecs(fitness?.workloadManagement, fitness?.injuryPrevention, fitness?.overall),
+    physioQuality: blendSpecs(physio?.rehabilitation, physio?.injuryPrevention, physio?.overall),
+    developmentQuality: blendSpecs(development?.youthDevelopment, development?.roleCoaching, development?.overall),
+    scoutingQuality: blendSpecs(scout?.scoutingAccuracy, scout?.marketKnowledge, scout?.overall),
+    tacticalQuality: blendSpecs(assistant?.tacticalAnalysis, assistant?.overall)
+  };
+};
+
+// ─── Report staff: solo da segnali reali gia' calcolati altrove, mai testo generico ───
+
+export interface ClubStaffReportContext {
+  round: number;
+  season: string;
+  players: Player[];
+  starters: string[];
+  tactic: Tactic | null;
+  scoutedTargets: Negotiation[];
+}
+
+const makeClubStaffReport = (
+  context: ClubStaffReportContext,
+  member: ClubStaffMember | undefined,
+  title: string,
+  detail: string,
+  playerId?: string,
+  playerName?: string
+): ClubStaffReport | null => {
+  if (!member) return null;
+  return {
+    id: `cstaffrep_${context.round}_${member.role}_${hashRatio(`${context.round}-${member.role}-${title}`).toString(36).slice(2, 8)}`,
+    round: context.round,
+    season: context.season,
+    role: member.role,
+    staffName: member.name,
+    playerId,
+    playerName,
+    title,
+    detail,
+    createdAt: new Date().toISOString()
+  };
+};
+
+const findFitnessReport = (state: ClubStaffState, context: ClubStaffReportContext): ClubStaffReport | null => {
+  const overloaded = context.players
+    .filter(p => context.starters.includes(p.id) && (p.workload?.fatigueRisk ?? 0) >= 62)
+    .sort((a, b) => (b.workload?.fatigueRisk ?? 0) - (a.workload?.fatigueRisk ?? 0))[0];
+  if (!overloaded) return null;
+  return makeClubStaffReport(
+    context,
+    getClubStaffMember(state, 'fitness_coach'),
+    'Carico da monitorare',
+    `Il carico di ${overloaded.name} e oltre la soglia consigliata (${overloaded.workload?.fatigueRisk}/100).`,
+    overloaded.id,
+    overloaded.name
+  );
+};
+
+const findPhysioReport = (state: ClubStaffState, context: ClubStaffReportContext): ClubStaffReport | null => {
+  const notReady = context.players.find(p => p.injuryStatus?.status === 'managed_return' && (p.injuryStatus?.reinjuryRisk ?? 0) >= 25);
+  if (notReady) {
+    return makeClubStaffReport(
+      context,
+      getClubStaffMember(state, 'head_physio'),
+      'Rientro da gestire',
+      `${notReady.name} non e pronto per un rientro da titolare: rischio ricaduta ${notReady.injuryStatus?.reinjuryRisk}/100.`,
+      notReady.id,
+      notReady.name
+    );
+  }
+  const respondingWell = context.players.find(p => p.injuryStatus?.status === 'rehab' && (p.injuryStatus?.returnReadiness ?? 0) >= 55);
+  if (respondingWell) {
+    return makeClubStaffReport(
+      context,
+      getClubStaffMember(state, 'head_physio'),
+      'Recupero in linea',
+      `${respondingWell.name} sta rispondendo bene al percorso di riabilitazione (${respondingWell.injuryStatus?.returnReadiness}/100).`,
+      respondingWell.id,
+      respondingWell.name
+    );
+  }
+  return null;
+};
+
+const findDevelopmentReport = (state: ClubStaffState, context: ClubStaffReportContext): ClubStaffReport | null => {
+  const growing = context.players
+    .filter(p => p.developmentProfile?.trend === 'crescita' && (p.developmentProfile?.seasonGrowth ?? 0) > 0.3)
+    .sort((a, b) => (b.developmentProfile?.seasonGrowth ?? 0) - (a.developmentProfile?.seasonGrowth ?? 0))[0];
+  if (growing) {
+    return makeClubStaffReport(
+      context,
+      getClubStaffMember(state, 'development_coach'),
+      'Crescita confermata',
+      `${growing.name} sta rispondendo bene al piano tecnico.`,
+      growing.id,
+      growing.name
+    );
+  }
+  const learningRole = context.players.find(p => (p.roleFamiliarity ?? []).some(entry => entry.status === 'learning' && entry.trainingProgress >= 70));
+  if (learningRole) {
+    return makeClubStaffReport(
+      context,
+      getClubStaffMember(state, 'development_coach'),
+      'Apprendimento ruolo vicino al salto',
+      `${learningRole.name} e vicino a un salto di affidabilita nel nuovo ruolo.`,
+      learningRole.id,
+      learningRole.name
+    );
+  }
+  return null;
+};
+
+const findScoutReport = (state: ClubStaffState, context: ClubStaffReportContext): ClubStaffReport | null => {
+  const target = context.scoutedTargets
+    .filter(t => (t.scoutLevel ?? 0) >= 2 && (t.projectFit ?? 0) >= 78)
+    .sort((a, b) => (b.projectFit ?? 0) - (a.projectFit ?? 0))[0];
+  if (!target) return null;
+  return makeClubStaffReport(
+    context,
+    getClubStaffMember(state, 'chief_scout'),
+    'Profilo compatibile',
+    `Il profilo osservato (${target.playerName}) ha un'ottima compatibilita con il DNA del progetto (${target.projectFit}/100).`,
+    undefined,
+    target.playerName
+  );
+};
+
+const findAssistantReport = (state: ClubStaffState, context: ClubStaffReportContext): ClubStaffReport | null => {
+  if (!context.tactic) return null;
+  const startersList = context.players.filter(p => context.starters.includes(p.id));
+  const avgCondition = startersList.length
+    ? startersList.reduce((sum, p) => sum + p.condition, 0) / startersList.length
+    : 100;
+
+  if (context.tactic.pressing >= 72 && avgCondition < 74) {
+    return makeClubStaffReport(
+      context,
+      getClubStaffMember(state, 'assistant_manager'),
+      'Pressing e fatica',
+      `Il pressing a ${context.tactic.pressing} sta consumando la squadra (condizione media ${Math.round(avgCondition)}): rischio spazi nel finale.`
+    );
+  }
+  if ((context.tactic.defensiveLine ?? 50) >= 68) {
+    return makeClubStaffReport(
+      context,
+      getClubStaffMember(state, 'assistant_manager'),
+      'Linea alta esposta',
+      'La linea difensiva molto alta lascia spazio alle spalle contro le ripartenze rapide.'
+    );
+  }
+  return null;
+};
+
+const CLUB_STAFF_REPORT_CHECKS: Array<(state: ClubStaffState, context: ClubStaffReportContext) => ClubStaffReport | null> = [
+  findFitnessReport,
+  findPhysioReport,
+  findDevelopmentReport,
+  findScoutReport,
+  findAssistantReport
+];
+
+// Avanza i report staff di al massimo una unita' per giornata, solo se esiste una causa reale.
+export const advanceClubStaffReports = (state: ClubStaffState, context: ClubStaffReportContext): ClubStaffState => {
+  if (state.lastReportRound === context.round) return state;
+
+  const offset = context.round % CLUB_STAFF_REPORT_CHECKS.length;
+  let report: ClubStaffReport | null = null;
+  for (let i = 0; i < CLUB_STAFF_REPORT_CHECKS.length && !report; i += 1) {
+    const check = CLUB_STAFF_REPORT_CHECKS[(offset + i) % CLUB_STAFF_REPORT_CHECKS.length];
+    report = check(state, context);
+  }
+
+  return {
+    ...state,
+    lastReportRound: context.round,
+    recentReports: report ? [report, ...state.recentReports].slice(0, 12) : state.recentReports
+  };
 };

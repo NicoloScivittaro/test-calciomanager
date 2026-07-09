@@ -293,7 +293,7 @@ export const createRealReplacementTargets = (
       offeredWage: 0,
       offeredContractYears: 0,
       probability: candidate.player.overall >= soldPlayer.overall ? 44 : 62,
-      status: 'pending' as const,
+      status: 'draft' as const,
       timeline: [
         `${teamName} ha ceduto ${soldPlayer.name}.`,
         `${candidate.player.name} e un sostituto reale nello stesso ruolo dal ${candidate.club.name}.`
