@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Info, Send, RotateCw, Eye, FileSignature, Database, ArrowLeftRight } from 'lucide-react';
+import { Search, Info, Send, RotateCw, Eye, FileSignature, Database, ArrowLeftRight, X } from 'lucide-react';
 import { CareerWorldState, ClubAIState, ClubHistoryState, ClubMemoryDraft, ClubProfile, IncomingTransferOffer, Player, Negotiation, NegotiationStatus, PlayerSeasonStat, Tactic, TeamDNAState, ContractPromiseType, ContractSquadRole, TransferBaseType, TransferOfferTerms, TransferPaymentInstallment, PurchaseClauseType, ObligationCondition, TransferAvailability, FutureClauseChoice, SellOnPercentage, BuyBackDuration, BuyBackClause, PlayerSwapTerms, PlayerSwapStatus, SwapCashDirection, FutureContractAgreement, ProtectiveClauseChoice, ProtectiveClauseDuration, AntiRivalClauseMode, AntiRivalPenaltyPercent, ANTI_RIVAL_PENALTY_PERCENTAGES, LoanSwapTerms, LoanSwapStatus, FirstRefusalClause, FirstRefusalTrigger, TransferMedicalCheck } from '../../types';
 import {
   AVAILABILITY_LABELS,
@@ -2533,8 +2533,8 @@ export default function Market({
   return (
     <div className="page-wrapper">
       {/* Header sempre visibile */}
-      <div className="card-premium" style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+      <div className="card-premium market-header-bar" style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div className="market-header-stats" style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
           <div>
             <span style={{ fontSize: '0.64rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 800 }}>Budget trasferimenti</span>
             <strong style={{ display: 'block', fontSize: '0.95rem', color: 'var(--color-pitch)' }}>{formatCurrency(budget)}</strong>
@@ -2566,18 +2566,18 @@ export default function Market({
             )}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div className="market-header-actions" style={{ display: 'flex', gap: '8px' }}>
           <button
             onClick={() => setMarketTab('trattative')}
             className={marketTab === 'trattative' ? 'btn-primary' : 'btn-secondary'}
-            style={{ fontSize: '0.78rem' }}
+            style={{ fontSize: '0.78rem', justifyContent: 'center', flex: 1 }}
           >
             <ArrowLeftRight size={14} /> Trattative
           </button>
           <button
             onClick={() => setMarketTab('database')}
             className={marketTab === 'database' ? 'btn-primary' : 'btn-secondary'}
-            style={{ fontSize: '0.78rem' }}
+            style={{ fontSize: '0.78rem', justifyContent: 'center', flex: 1 }}
           >
             <Database size={14} /> Database giocatori
           </button>
@@ -2591,9 +2591,9 @@ export default function Market({
             <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '14px', color: 'var(--color-gold)' }}>Acquisti in corso</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '14px' }}>
               {activeNegotiations.length === 0 ? (
-                <div className="card-premium" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>
-                  <Info size={20} style={{ marginBottom: '8px' }} />
-                  <p style={{ fontSize: '0.82rem' }}>Nessuna trattativa attiva. Cerca un obiettivo nel Database giocatori.</p>
+                <div className="card-premium ui-empty-state" style={{ gridColumn: '1 / -1' }}>
+                  <Info size={20} />
+                  <p>Nessuna trattativa attiva. Cerca un obiettivo nel Database giocatori.</p>
                 </div>
               ) : activeNegotiations.map(target => {
                 const terms = target.terms;
@@ -2853,9 +2853,13 @@ export default function Market({
             <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '14px', color: 'var(--color-pitch)' }}>Offerte ricevute</h3>
             <div className="card-premium" style={{ padding: pendingIncomingOffers.length ? 0 : '22px' }}>
               {pendingIncomingOffers.length === 0 ? (
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>Nessuna offerta ricevuta al momento. L'interesse dei club puo crescere prima che arrivi.</p>
+                <div className="ui-empty-state">
+                  <Send size={22} />
+                  <p>Nessuna offerta ricevuta al momento. L'interesse dei club puo crescere prima che arrivi.</p>
+                </div>
               ) : (
-                <table className="premium-table">
+                <div style={{ overflowX: 'auto' }}>
+                <table className="premium-table" style={{ minWidth: '760px' }}>
                   <thead>
                     <tr>
                       <th>Club</th><th>Giocatore</th><th>Formula</th><th>Offerta</th><th>Volonta giocatore</th><th style={{ textAlign: 'center' }}>Decisione</th>
@@ -2960,6 +2964,7 @@ export default function Market({
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
           </div>
@@ -2969,7 +2974,10 @@ export default function Market({
             <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '14px' }}>Interesse dei club</h3>
             <div className="card-premium" style={{ padding: outgoingMarketSummary.length ? '14px' : '22px' }}>
               {outgoingMarketSummary.length === 0 ? (
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>Nessun club sta ancora osservando i tuoi giocatori.</p>
+                <div className="ui-empty-state">
+                  <Eye size={22} />
+                  <p>Nessun club sta ancora osservando i tuoi giocatori.</p>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {outgoingMarketSummary.slice(0, 8).map(entry => (
@@ -3014,9 +3022,13 @@ export default function Market({
             </div>
             <div className="card-premium" style={{ padding: outgoingPlayers.length ? 0 : '22px' }}>
               {outgoingPlayers.length === 0 ? (
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>Nessun giocatore con disponibilita segnalata.</p>
+                <div className="ui-empty-state">
+                  <ArrowLeftRight size={22} />
+                  <p>Nessun giocatore con disponibilita segnalata.</p>
+                </div>
               ) : (
-                <table className="premium-table">
+                <div style={{ overflowX: 'auto' }}>
+                <table className="premium-table" style={{ minWidth: '820px' }}>
                   <thead>
                     <tr><th>Giocatore</th><th>Disponibilita</th><th>Prezzo richiesto</th><th>Minimo privato</th><th>Contratto</th><th>Interesse</th><th>Motivazione</th></tr>
                   </thead>
@@ -3071,6 +3083,7 @@ export default function Market({
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
           </div>
@@ -3080,7 +3093,10 @@ export default function Market({
             <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '14px' }}>Trattative concluse di recente</h3>
             <div className="card-premium" style={{ padding: concludedNegotiations.length ? 0 : '22px' }}>
               {concludedNegotiations.length === 0 ? (
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>Nessuna trattativa conclusa di recente.</p>
+                <div className="ui-empty-state">
+                  <FileSignature size={22} />
+                  <p>Nessuna trattativa conclusa di recente.</p>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {concludedNegotiations.map(target => {
@@ -3115,7 +3131,10 @@ export default function Market({
             <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '14px' }}>Cessioni recenti</h3>
             <div className="card-premium" style={{ padding: recentOutgoingOutcomes.length ? 0 : '22px' }}>
               {recentOutgoingOutcomes.length === 0 ? (
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>Nessuna offerta ricevuta conclusa di recente.</p>
+                <div className="ui-empty-state">
+                  <Send size={22} />
+                  <p>Nessuna offerta ricevuta conclusa di recente.</p>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {recentOutgoingOutcomes.map(offer => (
@@ -3228,13 +3247,13 @@ export default function Market({
                   <option value="Ambidestro">Ambidestro</option>
                 </select>
                 <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <input type="checkbox" checked={dbSustainableOnly} onChange={e => setDbSustainableOnly(e.target.checked)} /> Solo sostenibili
+                  <input className="ui-checkbox" type="checkbox" checked={dbSustainableOnly} onChange={e => setDbSustainableOnly(e.target.checked)} /> Solo sostenibili
                 </label>
                 <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <input type="checkbox" checked={dbDnaCompatibleOnly} onChange={e => setDbDnaCompatibleOnly(e.target.checked)} /> Solo DNA compatibile
+                  <input className="ui-checkbox" type="checkbox" checked={dbDnaCompatibleOnly} onChange={e => setDbDnaCompatibleOnly(e.target.checked)} /> Solo DNA compatibile
                 </label>
                 <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <input type="checkbox" checked={dbShowOwnRoster} onChange={e => setDbShowOwnRoster(e.target.checked)} /> Mostra rosa attuale (confronto)
+                  <input className="ui-checkbox" type="checkbox" checked={dbShowOwnRoster} onChange={e => setDbShowOwnRoster(e.target.checked)} /> Mostra rosa attuale (confronto)
                 </label>
               </div>
             )}
@@ -3375,7 +3394,12 @@ export default function Market({
         {biddingPlayer && (
           <div className="modal-backdrop" onClick={() => setBiddingPlayer(null)}>
             <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="modal-content" style={{ width: '520px', maxHeight: '88vh', overflowY: 'auto' }} onClick={event => event.stopPropagation()}>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: '14px' }}>Offerta al club per {biddingPlayer.playerName}</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '14px' }}>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Offerta al club per {biddingPlayer.playerName}</h3>
+                <button className="btn-secondary" onClick={() => setBiddingPlayer(null)} aria-label="Chiudi offerta al club" style={{ width: '34px', height: '34px', padding: 0, justifyContent: 'center', flex: '0 0 auto' }}>
+                  <X size={15} />
+                </button>
+              </div>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
                 Fase 1 di 2: qui tratti solo con il {biddingPlayer.currentClub}. Il contratto/prestito col giocatore si negozia dopo, solo se il club accetta.
               </p>
@@ -3808,7 +3832,7 @@ export default function Market({
                     }
                     className="btn-primary" style={{ flex: 1, justifyContent: 'center' }}
                   >
-                    {isSimulatingDeal ? <><RotateCw size={14} className="spin" style={{ animation: 'spin 1s linear infinite' }} /> Negoziazione...</> : <><Send size={14} /> Invia offerta al club</>}
+                    {isSimulatingDeal ? <><RotateCw size={14} className="ui-spin" /> Negoziazione...</> : <><Send size={14} /> Invia offerta al club</>}
                   </button>
                 </div>
               </div>
@@ -3824,7 +3848,12 @@ export default function Market({
         {contractTarget && contractPreview && (
           <div className="modal-backdrop" onClick={() => setContractTarget(null)}>
             <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="modal-content" style={{ width: '520px' }} onClick={event => event.stopPropagation()}>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: '14px' }}>Contratto per {contractTarget.playerName}</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '14px' }}>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Contratto per {contractTarget.playerName}</h3>
+                <button className="btn-secondary" onClick={() => setContractTarget(null)} aria-label="Chiudi contratto" style={{ width: '34px', height: '34px', padding: 0, justifyContent: 'center', flex: '0 0 auto' }}>
+                  <X size={15} />
+                </button>
+              </div>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
                 Fase 2 di 2: il club ha accettato {formatCurrency(contractTarget.clubAgreedFee ?? 0)}. Ora negozi solo con il giocatore.
               </p>
@@ -3902,7 +3931,7 @@ export default function Market({
                 <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid var(--border-light)', paddingTop: '14px' }}>
                   <button disabled={isNegotiatingContract} onClick={() => setContractTarget(null)} className="btn-secondary" style={{ flex: 1, justifyContent: 'center' }}>Annulla</button>
                   <button disabled={isNegotiatingContract} onClick={handleSendContractOffer} className="btn-primary" style={{ flex: 1, justifyContent: 'center' }}>
-                    {isNegotiatingContract ? <><RotateCw size={14} className="spin" style={{ animation: 'spin 1s linear infinite' }} /> Negoziazione...</> : <><FileSignature size={14} /> Proponi contratto</>}
+                    {isNegotiatingContract ? <><RotateCw size={14} className="ui-spin" /> Negoziazione...</> : <><FileSignature size={14} /> Proponi contratto</>}
                   </button>
                 </div>
               </div>
@@ -3918,7 +3947,12 @@ export default function Market({
         {loanTarget && loanContractPreview && (
           <div className="modal-backdrop" onClick={() => setLoanTarget(null)}>
             <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="modal-content" style={{ width: '480px' }} onClick={event => event.stopPropagation()}>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: '14px' }}>Prestito per {loanTarget.playerName}</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '14px' }}>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Prestito per {loanTarget.playerName}</h3>
+                <button className="btn-secondary" onClick={() => setLoanTarget(null)} aria-label="Chiudi prestito" style={{ width: '34px', height: '34px', padding: 0, justifyContent: 'center', flex: '0 0 auto' }}>
+                  <X size={15} />
+                </button>
+              </div>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
                 Fase 2 di 2: il club ha accettato i termini del prestito. Ora il giocatore valuta la quota stipendio a tuo carico.
               </p>
@@ -3954,7 +3988,7 @@ export default function Market({
                 <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid var(--border-light)', paddingTop: '14px' }}>
                   <button disabled={isNegotiatingContract} onClick={() => setLoanTarget(null)} className="btn-secondary" style={{ flex: 1, justifyContent: 'center' }}>Annulla</button>
                   <button disabled={isNegotiatingContract} onClick={handleSendLoanAcceptance} className="btn-primary" style={{ flex: 1, justifyContent: 'center' }}>
-                    {isNegotiatingContract ? <><RotateCw size={14} className="spin" style={{ animation: 'spin 1s linear infinite' }} /> Negoziazione...</> : <><FileSignature size={14} /> Concludi prestito</>}
+                    {isNegotiatingContract ? <><RotateCw size={14} className="ui-spin" /> Negoziazione...</> : <><FileSignature size={14} /> Concludi prestito</>}
                   </button>
                 </div>
               </div>
@@ -3970,7 +4004,12 @@ export default function Market({
         {precontractTarget && precontractPreview && (
           <div className="modal-backdrop" onClick={() => setPrecontractTarget(null)}>
             <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="modal-content" style={{ width: '480px' }} onClick={event => event.stopPropagation()}>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: '14px' }}>Precontratto per {precontractTarget.playerName}</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '14px' }}>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Precontratto per {precontractTarget.playerName}</h3>
+                <button className="btn-secondary" onClick={() => setPrecontractTarget(null)} aria-label="Chiudi precontratto" style={{ width: '34px', height: '34px', padding: 0, justifyContent: 'center', flex: '0 0 auto' }}>
+                  <X size={15} />
+                </button>
+              </div>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
                 Accordo per la prossima stagione: nessun cartellino, nessuna modifica alla rosa ora. Il giocatore si trasferira a parametro zero a fine stagione, se l'accordo resta valido.
               </p>
@@ -4011,7 +4050,7 @@ export default function Market({
                 <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid var(--border-light)', paddingTop: '14px' }}>
                   <button disabled={isProposingPrecontract} onClick={() => setPrecontractTarget(null)} className="btn-secondary" style={{ flex: 1, justifyContent: 'center' }}>Annulla</button>
                   <button disabled={isProposingPrecontract} onClick={handleSendPrecontractOffer} className="btn-primary" style={{ flex: 1, justifyContent: 'center' }}>
-                    {isProposingPrecontract ? <><RotateCw size={14} className="spin" style={{ animation: 'spin 1s linear infinite' }} /> Trattativa...</> : <><FileSignature size={14} /> Proponi precontratto</>}
+                    {isProposingPrecontract ? <><RotateCw size={14} className="ui-spin" /> Trattativa...</> : <><FileSignature size={14} /> Proponi precontratto</>}
                   </button>
                 </div>
               </div>
@@ -4020,13 +4059,6 @@ export default function Market({
         )}
       </AnimatePresence>
       </ModalPortal>
-
-      <style>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}</style>
 
       <PlayerProfileModal
         player={playerSheet?.player ?? null}

@@ -116,8 +116,30 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 @media (max-width: 1024px) {
+  /* !important: Dashboard.tsx imposta grid-template-columns anche inline (5fr 3fr / 1fr 1fr) sugli
+     stessi div con questa classe, quindi senza !important questa regola non vince mai sotto 1024px. */
   .grid-dashboard {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .grid-dashboard {
+    gap: 14px !important;
+  }
+
+  .market-header-bar {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+
+  .market-header-stats {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .market-header-actions {
+    width: 100%;
   }
 }
 
@@ -2674,4 +2696,204 @@ textarea:focus-visible,
   transform: translateY(-2px);
   border-color: rgba(16, 185, 129, 0.4);
   box-shadow: var(--shadow-active);
+}
+
+/* Gruppo di tab/filtri segmentati riutilizzabile: sostituisce le implementazioni ad-hoc duplicate
+   in Tactics/Squad/Matches. Puramente additivo, non tocca i bottoni gia' esistenti se non riclassati. */
+.ui-tab-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ui-tab {
+  padding: 7px 12px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-family: var(--font-heading);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  white-space: nowrap;
+}
+
+.ui-tab:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.ui-tab.active {
+  color: #042F1A;
+  background: var(--color-pitch);
+  border-color: var(--color-pitch);
+  font-weight: 800;
+}
+
+.dashboard-gold-cta {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--color-gold);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.dashboard-gold-cta:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+/* Checkbox skinnato coerente col tema scuro (unico controllo nativo non ritemato in precedenza). */
+.ui-checkbox {
+  accent-color: var(--color-pitch);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+@keyframes ui-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ui-spin {
+  animation: ui-spin 0.8s linear infinite;
+}
+
+/* ─── App shell responsive: sidebar/topbar non avevano ALCUN breakpoint (unico layout desktop-only
+   del progetto). Sotto 1024px la sidebar collassa a rail di sole icone; sotto 860px diventa un
+   drawer a scomparsa aperto da un pulsante hamburger nella topbar. ─── */
+@media (max-width: 1024px) {
+  :root {
+    --sidebar-width: 76px;
+  }
+
+  .app-sidebar .sidebar-label,
+  .app-sidebar .sidebar-brand-text,
+  .app-sidebar .sidebar-restart-label,
+  .app-sidebar .sidebar-coach-text {
+    display: none;
+  }
+
+  .app-sidebar {
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+  }
+
+  .app-sidebar .sidebar-nav-item {
+    justify-content: center !important;
+    padding: 12px !important;
+  }
+
+  .app-sidebar .sidebar-coach-panel {
+    justify-content: center !important;
+    padding: 10px !important;
+  }
+
+  .app-topbar {
+    padding: 0 14px !important;
+    gap: 10px;
+  }
+
+  .topbar-widgets {
+    gap: 10px !important;
+  }
+
+  .topbar-widget-label {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  :root {
+    --sidebar-width: 0px;
+  }
+
+  .app-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 500 !important;
+    width: 240px !important;
+    transform: translateX(-100%);
+    transition: transform 220ms ease;
+    box-shadow: 24px 0 48px rgba(0, 0, 0, 0.5);
+  }
+
+  .app-sidebar.open {
+    transform: translateX(0);
+  }
+
+  .app-sidebar .sidebar-label,
+  .app-sidebar .sidebar-brand-text,
+  .app-sidebar .sidebar-restart-label,
+  .app-sidebar .sidebar-coach-text {
+    display: block;
+  }
+
+  .app-sidebar .sidebar-nav-item {
+    justify-content: flex-start !important;
+    padding: 12px 16px !important;
+  }
+
+  .app-sidebar .sidebar-coach-panel {
+    justify-content: flex-start !important;
+    padding: 12px 14px !important;
+  }
+
+  .sidebar-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 480;
+    background: rgba(1, 5, 3, 0.6);
+    backdrop-filter: blur(3px);
+  }
+
+  .sidebar-menu-toggle {
+    display: inline-flex !important;
+  }
+
+  .app-topbar {
+    flex-wrap: wrap;
+    height: auto !important;
+    min-height: var(--topbar-height);
+    padding: 10px 14px !important;
+    gap: 8px 10px;
+  }
+
+  .topbar-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .topbar-widgets {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px !important;
+  }
+
+  .topbar-widgets > * {
+    flex: 1 1 auto;
+  }
+}
+
+.sidebar-menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: rgba(26, 33, 42, 0.6);
+  color: var(--text-primary);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+@media (min-width: 861px) {
+  .sidebar-scrim {
+    display: none;
+  }
 }

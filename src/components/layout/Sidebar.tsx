@@ -8,9 +8,11 @@ interface SidebarProps {
   coachName: string;
   teamName: string;
   onRestartCareer: () => void;
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
 }
 
-export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName, onRestartCareer }: SidebarProps) {
+export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName, onRestartCareer, mobileOpen = false, onCloseMobile }: SidebarProps) {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'squad', label: 'Rosa Giocatori', icon: Users },
@@ -20,8 +22,15 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
     { id: 'history', label: 'Storia del Club', icon: BookOpen },
   ];
 
+  const handleNavigate = (tab: string) => {
+    setCurrentTab(tab);
+    onCloseMobile?.();
+  };
+
   return (
-    <aside className="app-sidebar" style={{
+    <>
+      {mobileOpen && <div className="sidebar-scrim" onClick={onCloseMobile} />}
+      <aside className={`app-sidebar${mobileOpen ? ' open' : ''}`} style={{
       width: 'var(--sidebar-width)',
       height: '100%',
       backgroundColor: 'var(--bg-surface)',
@@ -47,17 +56,19 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          boxShadow: '0 0 10px rgba(16, 185, 129, 0.4)'
+          boxShadow: '0 0 10px rgba(16, 185, 129, 0.4)',
+          flex: '0 0 auto'
         }}>
           <Trophy size={20} color="#042F1A" strokeWidth={2.5} />
         </div>
-        <div>
+        <div className="sidebar-brand-text">
           <h1 style={{
             fontSize: '1.2rem',
             fontWeight: 800,
             fontFamily: 'var(--font-heading)',
             letterSpacing: '-0.02em',
-            color: 'var(--text-primary)'
+            color: 'var(--text-primary)',
+            whiteSpace: 'nowrap'
           }}>
             CALCIO<span style={{ color: 'var(--color-pitch)' }}>MANAGER</span>
           </h1>
@@ -66,7 +77,8 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
             color: 'var(--text-muted)',
             textTransform: 'uppercase',
             letterSpacing: '0.1em',
-            fontWeight: 700
+            fontWeight: 700,
+            whiteSpace: 'nowrap'
           }}>
             HQ Tactical Suite
           </span>
@@ -83,7 +95,8 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
             <button
               key={item.id}
               className={`sidebar-nav-item${isActive ? ' active' : ''}`}
-              onClick={() => setCurrentTab(item.id)}
+              onClick={() => handleNavigate(item.id)}
+              title={item.label}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -126,10 +139,11 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
                 size={18}
                 style={{
                   color: isActive ? 'var(--color-pitch)' : 'var(--text-muted)',
-                  transition: 'color 0.2s ease'
+                  transition: 'color 0.2s ease',
+                  flex: '0 0 auto'
                 }}
               />
-              <span>{item.label}</span>
+              <span className="sidebar-label">{item.label}</span>
             </button>
           );
         })}
@@ -137,6 +151,7 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
 
       <button
         onClick={onRestartCareer}
+        title="Ricomincia carriera"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -151,15 +166,16 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
           fontSize: '0.76rem',
           fontWeight: 800,
           cursor: 'pointer',
-          fontFamily: 'var(--font-heading)'
+          fontFamily: 'var(--font-heading)',
+          transition: 'background-color 0.2s ease, border-color 0.2s ease'
         }}
       >
-        <RotateCcw size={14} />
-        Ricomincia carriera
+        <RotateCcw size={14} style={{ flex: '0 0 auto' }} />
+        <span className="sidebar-restart-label">Ricomincia carriera</span>
       </button>
 
       {/* Coach Info Profile Panel */}
-      <div style={{
+      <div className="sidebar-coach-panel" style={{
         marginTop: 'auto',
         backgroundColor: 'rgba(26, 33, 42, 0.4)',
         border: '1px solid var(--border-light)',
@@ -179,11 +195,12 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
           justifyContent: 'center',
           fontWeight: 700,
           color: '#1e1b4b',
-          fontSize: '0.9rem'
+          fontSize: '0.9rem',
+          flex: '0 0 auto'
         }}>
           {coachName[0]}
         </div>
-        <div style={{ overflow: 'hidden' }}>
+        <div className="sidebar-coach-text" style={{ overflow: 'hidden' }}>
           <p style={{
             fontSize: '0.8rem',
             fontWeight: 700,
@@ -206,5 +223,6 @@ export default function Sidebar({ currentTab, setCurrentTab, coachName, teamName
         </div>
       </div>
     </aside>
+    </>
   );
 }

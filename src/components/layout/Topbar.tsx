@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Bell, Euro, Calendar, Download, Upload } from 'lucide-react';
+import { Bell, Euro, Calendar, Download, Upload, Menu } from 'lucide-react';
 import { NewsItem } from '../../types';
 import {
   createCareerBackup,
@@ -19,9 +19,10 @@ interface TopbarProps {
   careerStorageKeys: string[];
   appDataVersion: string;
   clubName?: string;
+  onOpenMobileMenu?: () => void;
 }
 
-export default function Topbar({ currentTab, budget, currentMatchDate, news, markNewsAsRead, activeDecisionCount = 0, careerStorageKeys, appDataVersion, clubName }: TopbarProps) {
+export default function Topbar({ currentTab, budget, currentMatchDate, news, markNewsAsRead, activeDecisionCount = 0, careerStorageKeys, appDataVersion, clubName, onOpenMobileMenu }: TopbarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -108,7 +109,15 @@ export default function Topbar({ currentTab, budget, currentMatchDate, news, mar
       zIndex: 90
     }}>
       {/* Page Title */}
-      <div>
+      <div className="topbar-title-row">
+        <button
+          type="button"
+          className="sidebar-menu-toggle"
+          onClick={onOpenMobileMenu}
+          aria-label="Apri menu di navigazione"
+        >
+          <Menu size={18} />
+        </button>
         <h2 className="topbar-title" style={{
           fontSize: '1.25rem',
           fontWeight: 700,
@@ -119,59 +128,44 @@ export default function Topbar({ currentTab, budget, currentMatchDate, news, mar
       </div>
 
       {/* Center/Right widgets */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-        
+      <div className="topbar-widgets" style={{ display: 'flex', alignItems: 'center', gap: '24px', flexWrap: 'wrap' }}>
+
         {/* Date Widget */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          background: 'rgba(34, 43, 54, 0.4)',
-          border: '1px solid var(--border-light)',
-          padding: '6px 12px',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.8rem'
-        }}>
+        <div className="ui-stat-pill" style={{ alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
           <Calendar size={14} style={{ color: 'var(--color-pitch)' }} />
-          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Prossimo Match:</span>
-          <span style={{ color: 'var(--text-secondary)' }}>{currentMatchDate}</span>
+          <span className="topbar-widget-label" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Prossimo Match:</span>
+          <span>{currentMatchDate}</span>
         </div>
 
         {/* Budget Widget */}
-        <div style={{
-          display: 'flex',
+        <div className="ui-stat-pill" style={{
           alignItems: 'center',
           gap: '8px',
-          background: 'rgba(16, 185, 129, 0.05)',
-          border: '1px solid rgba(16, 185, 129, 0.2)',
           padding: '6px 12px',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: '0.8rem'
+          background: 'rgba(16, 185, 129, 0.05)',
+          borderColor: 'rgba(16, 185, 129, 0.2)'
         }}>
           <Euro size={14} style={{ color: 'var(--color-lime)' }} />
-          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Budget Trasferimenti:</span>
-          <span style={{ color: 'var(--color-lime)', fontWeight: 700 }}>{formatCurrency(budget)}</span>
+          <span className="topbar-widget-label" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Budget Trasferimenti:</span>
+          <strong style={{ color: 'var(--color-lime)' }}>{formatCurrency(budget)}</strong>
         </div>
 
         {activeDecisionCount > 0 && (
-          <div style={{
-            display: 'flex',
+          <div className="ui-stat-pill" style={{
             alignItems: 'center',
             gap: '8px',
-            background: 'rgba(245, 158, 11, 0.08)',
-            border: '1px solid rgba(245, 158, 11, 0.24)',
             padding: '6px 12px',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: '0.8rem'
+            background: 'rgba(245, 158, 11, 0.08)',
+            borderColor: 'rgba(245, 158, 11, 0.24)'
           }}>
             <Bell size={14} style={{ color: 'var(--color-gold)' }} />
-            <span style={{ fontWeight: 700, color: 'var(--color-gold)' }}>Decisioni aperte:</span>
-            <span style={{ color: 'var(--text-primary)', fontWeight: 800 }}>{activeDecisionCount}</span>
+            <span className="topbar-widget-label" style={{ fontWeight: 700, color: 'var(--color-gold)' }}>Decisioni aperte:</span>
+            <strong style={{ color: 'var(--text-primary)' }}>{activeDecisionCount}</strong>
           </div>
         )}
 
         {/* Career Backup Controls */}
-        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <button
             onClick={handleExportBackup}
             className="btn-secondary"

@@ -549,7 +549,7 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                       player.status === 'Stanco' ? 'status-fatigue' :
                       player.status === 'Infortunato' ? 'status-injured' :
                       player.status === 'Cedibile' ? 'status-sale' : 'status-active'
-                    }`} style={{ display: 'inline-block', width: '85px', textAlign: 'center' }}>
+                    }`} style={{ display: 'inline-block', minWidth: '85px', textAlign: 'center' }}>
                       {player.status}
                     </span>
                   </td>
@@ -558,7 +558,7 @@ export default function Squad({ players, updatePlayer, starters, setStarters, be
                       title={availability.reasons[0]}
                       style={{
                         display: 'inline-block',
-                        width: '110px',
+                        minWidth: '110px',
                         textAlign: 'center',
                         fontSize: '0.66rem',
                         fontWeight: 800,

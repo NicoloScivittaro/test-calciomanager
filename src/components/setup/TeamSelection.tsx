@@ -70,7 +70,7 @@ export default function TeamSelection({ clubs, managerName, onSelect }: TeamSele
       </section>
 
       <section className="team-selection-layout">
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+        <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '8px', marginBottom: '14px' }}>
           {(['serie_a', 'serie_b'] as const).map(division => (
             <button
               key={division}

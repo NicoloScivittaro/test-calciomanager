@@ -151,21 +151,10 @@ export default function ClubInfoModal({
               </div>
 
               <button
+                className="btn-secondary"
                 onClick={onClose}
                 aria-label="Chiudi scheda club"
-                style={{
-                  background: 'rgba(26, 33, 42, 0.8)',
-                  border: '1px solid var(--border-light)',
-                  color: 'var(--text-secondary)',
-                  borderRadius: '8px',
-                  width: '36px',
-                  height: '36px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  flex: '0 0 auto'
-                }}
+                style={{ width: '36px', height: '36px', padding: 0, justifyContent: 'center', flex: '0 0 auto' }}
               >
                 <X size={18} />
               </button>

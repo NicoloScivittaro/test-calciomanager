@@ -24,6 +24,11 @@ interface MatchPlaybackControlsProps {
   onSpeedChange: (speed: ReplaySpeed) => void;
   onSeekSeconds: (seconds: number) => void;
   onRestart: () => void;
+  // Partita ancora in corso: il secondo mostrato arriva gia' sincronizzato dal genitore (unica sorgente
+  // del tempo in MatchCenter). In questa modalita' i controlli diventano un readout: niente orologio
+  // proprio, niente pulsanti di play/pausa/velocita'/seek che potrebbero far divergere il replay dal vero
+  // minuto di gara. Torna interattivo solo a fischio finale (readOnly=false), per la revisione libera.
+  readOnly?: boolean;
 }
 
 // Possiede solo l'orologio di riproduzione (requestAnimationFrame): non decide mai fasi, eventi o risultati,
@@ -40,7 +45,8 @@ export default function MatchPlaybackControls({
   onTogglePlay,
   onSpeedChange,
   onSeekSeconds,
-  onRestart
+  onRestart,
+  readOnly = false
 }: MatchPlaybackControlsProps) {
   const currentSecondRef = useRef(currentSecond);
   useEffect(() => {
@@ -48,7 +54,7 @@ export default function MatchPlaybackControls({
   }, [currentSecond]);
 
   useEffect(() => {
-    if (!playing) return undefined;
+    if (!playing || readOnly) return undefined;
     let rafId = 0;
     let lastTimestamp: number | null = null;
 
@@ -72,7 +78,7 @@ export default function MatchPlaybackControls({
 
     rafId = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafId);
-  }, [playing, speed, durationSeconds, onTick, onTogglePlay]);
+  }, [playing, readOnly, speed, durationSeconds, onTick, onTogglePlay]);
 
   const minute = Math.floor(currentSecond / 60);
 
@@ -90,6 +96,7 @@ export default function MatchPlaybackControls({
           type="button"
           className="pitch-control-button"
           onClick={onTogglePlay}
+          disabled={readOnly}
           aria-label={playing ? 'Metti in pausa il replay' : 'Avvia il replay'}
         >
           {playing ? <Pause size={16} /> : <Play size={16} />}
@@ -98,6 +105,7 @@ export default function MatchPlaybackControls({
           type="button"
           className="pitch-control-button"
           onClick={onRestart}
+          disabled={readOnly}
           aria-label="Riavvia il replay dall'inizio"
         >
           <RotateCcw size={15} />
@@ -106,28 +114,30 @@ export default function MatchPlaybackControls({
           type="button"
           className="pitch-control-button"
           onClick={handleNextEvent}
-          disabled={markers.every(marker => marker.actionStartSecond <= currentSecond + 0.5)}
+          disabled={readOnly || markers.every(marker => marker.actionStartSecond <= currentSecond + 0.5)}
           aria-label="Salta al prossimo evento"
           title="Salta al prossimo evento"
         >
           <SkipForward size={15} />
         </button>
 
-        <span className="pitch-control-possession">Ritmo replay</span>
-        <div className="pitch-control-speeds" role="group" aria-label="Velocita di riproduzione">
-          {SPEEDS.map(value => (
-            <button
-              key={value}
-              type="button"
-              className={`pitch-speed-button${speed === value ? ' active' : ''}`}
-              aria-pressed={speed === value}
-              aria-label={`Velocita ${value}x`}
-              onClick={() => onSpeedChange(value)}
-            >
-              {value}x
-            </button>
-          ))}
-        </div>
+        <span className="pitch-control-possession">{readOnly ? 'Sincronizzato con la diretta' : 'Ritmo replay'}</span>
+        {!readOnly && (
+          <div className="pitch-control-speeds" role="group" aria-label="Velocita di riproduzione">
+            {SPEEDS.map(value => (
+              <button
+                key={value}
+                type="button"
+                className={`pitch-speed-button${speed === value ? ' active' : ''}`}
+                aria-pressed={speed === value}
+                aria-label={`Velocita ${value}x`}
+                onClick={() => onSpeedChange(value)}
+              >
+                {value}x
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="pitch-control-readout">
           <strong>{minute}&apos;</strong>
@@ -143,6 +153,7 @@ export default function MatchPlaybackControls({
           max={Math.max(1, Math.round(durationSeconds))}
           value={Math.round(currentSecond)}
           onChange={event => onSeekSeconds(Number(event.target.value))}
+          disabled={readOnly}
           aria-label="Posizione nel replay"
           className="pitch-timeline-scrubber"
         />
@@ -154,6 +165,7 @@ export default function MatchPlaybackControls({
               className={`pitch-timeline-marker pitch-timeline-marker-${marker.kind} pitch-timeline-marker-${marker.team}`}
               style={{ left: `${clampPercent((marker.actionStartSecond / durationSeconds) * 100)}%` }}
               onClick={() => onSeekSeconds(marker.actionStartSecond)}
+              disabled={readOnly}
               aria-label={`Vai al minuto ${marker.minute}: ${marker.label}`}
               title={`${marker.minute}' - ${marker.label}${marker.isVisualOnly ? ' (Episodio tattico del replay)' : ''}`}
             >

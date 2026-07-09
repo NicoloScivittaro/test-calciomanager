@@ -171,6 +171,7 @@ export default function App() {
   });
   const activeClub = selectedClub ?? DEFAULT_CLUB_PROFILE;
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Core States (Loaded synchronously using lazy initializers to prevent blank renders)
   const [players, setPlayers] = useState<Player[]>(() => {
@@ -909,6 +910,8 @@ export default function App() {
         coachName={MANAGER_NAME}
         teamName={activeClub.name}
         onRestartCareer={handleRestartCareer}
+        mobileOpen={mobileNavOpen}
+        onCloseMobile={() => setMobileNavOpen(false)}
       />
 
       {/* Main Container */}
@@ -924,6 +927,7 @@ export default function App() {
           careerStorageKeys={CAREER_STORAGE_KEYS}
           appDataVersion={DATA_VERSION}
           clubName={activeClub.name}
+          onOpenMobileMenu={() => setMobileNavOpen(true)}
         />
 
         {/* Dynamic Page Views */}

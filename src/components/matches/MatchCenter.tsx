@@ -98,7 +98,7 @@ interface MatchCenterProps {
   setIncomingOffers: (offers: IncomingTransferOffer[]) => void;
 }
 
-type SimSpeed = 1 | 2 | 4 | 8;
+type SimSpeed = 1 | 2 | 3 | 4 | 5;
 
 interface LiveActionFrame {
   teamHasBall: boolean;
@@ -124,11 +124,22 @@ interface GoalFlash {
   detail: string;
 }
 
+// ─── Sorgente unica tempo reale -> tempo simulato: 90' simulati = 12 minuti reali a velocita' 1x
+// (720.000ms), quindi 1' simulato = 8.000ms reali a 1x. La velocita' scala linearmente questo rapporto:
+// a Nx, 1' simulato dura 8000/N ms reali. Sia il tick minuto-per-minuto del motore (che genera gol/
+// cartellini) sia l'orologio continuo del replay tattico derivano da QUESTA stessa formula: non esistono
+// altri punti nel codice che decidono "quanto dura un minuto reale di partita".
+const FULL_MATCH_SIMULATED_MINUTES = 90;
+const FULL_MATCH_REAL_DURATION_MS_AT_1X = 12 * 60 * 1000;
+const BASE_REAL_MS_PER_SIMULATED_MINUTE = FULL_MATCH_REAL_DURATION_MS_AT_1X / FULL_MATCH_SIMULATED_MINUTES;
+const realMsPerSimulatedMinute = (speed: SimSpeed): number => BASE_REAL_MS_PER_SIMULATED_MINUTE / speed;
+
 const speedDelays: Record<SimSpeed, number> = {
-  1: 420,
-  2: 220,
-  4: 110,
-  8: 55
+  1: realMsPerSimulatedMinute(1),
+  2: realMsPerSimulatedMinute(2),
+  3: realMsPerSimulatedMinute(3),
+  4: realMsPerSimulatedMinute(4),
+  5: realMsPerSimulatedMinute(5)
 };
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -480,6 +491,7 @@ interface LiveTacticalBoardProps {
   report: TacticalEvaluation;
   stats: MatchStats;
   minute: number;
+  authoritativeMatchSeconds: number;
   matchEdge: number;
   teamName: string;
   opponentName: string;
@@ -500,6 +512,7 @@ function LiveTacticalBoard({
   report,
   stats,
   minute,
+  authoritativeMatchSeconds,
   matchEdge,
   teamName,
   opponentName,
@@ -524,10 +537,18 @@ function LiveTacticalBoard({
       userSquad,
       opponentSquad,
       events,
-      durationMinutes: Math.max(minute, 1)
+      // Un minuto di margine oltre il minuto autoritativo corrente: l'orologio continuo
+      // (authoritativeMatchSeconds) avanza dentro il minuto in corso prima che 'minute' scatti, quindi il
+      // replay deve avere gia' pronto quel materiale per interpolare senza fermarsi in attesa del tick
+      // successivo (mai oltre i 90' regolamentari).
+      durationMinutes: Math.min(FULL_MATCH_SIMULATED_MINUTES, Math.max(minute + 1, 1))
     }),
     [matchId, tactic, opponentModule, lineup, opponentLineup, userSquad, opponentSquad, events, minute]
   );
+  // Prima del fischio finale il replay non ha un orologio proprio: legge 'authoritativeMatchSeconds',
+  // la stessa sorgente unica del timer in alto (MatchCenter). Dopo il fischio finale diventa una vista
+  // di revisione libera (play/pausa/velocita'/seek locali) sull'intera partita gia' conclusa: a quel
+  // punto non esiste piu' nulla con cui potrebbe desincronizzarsi.
   const [playback, setPlayback] = useState<{ currentSecond: number; playing: boolean; speed: ReplaySpeed }>(
     { currentSecond: 0, playing: true, speed: 0.75 }
   );
@@ -541,15 +562,16 @@ function LiveTacticalBoard({
   });
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
 
-  const interpolatedFrame = useMemo(
-    () => interpolateReplayFrame(matchReplay.frames, playback.currentSecond),
-    [matchReplay, playback.currentSecond]
-  );
-  const timelineMarkers = useMemo(() => buildTimelineMarkers(matchId, events, matchReplay), [matchId, events, matchReplay]);
-
   // Stato autoritativo della partita reale (MatchCenter): il replay non deve mai vivere oltre di esso.
   const isMatchFinished = gameState === 'finished';
   const isAuthoritativeMatchRunning = gameState === 'playing';
+  const displaySecond = isMatchFinished ? playback.currentSecond : authoritativeMatchSeconds;
+
+  const interpolatedFrame = useMemo(
+    () => interpolateReplayFrame(matchReplay.frames, displaySecond),
+    [matchReplay, displaySecond]
+  );
+  const timelineMarkers = useMemo(() => buildTimelineMarkers(matchId, events, matchReplay), [matchId, events, matchReplay]);
 
   // Al fischio finale: ferma per sempre l'orologio del replay e blocca palla/giocatori sull'ultimo frame
   // coerente. Gira una sola volta per partita (gameState/duration non cambiano piu' dopo il fischio finale),
@@ -580,7 +602,7 @@ function LiveTacticalBoard({
     : interpolatedFrame?.possessionTeamId === 'opponent'
       ? opponentName
       : 'Fase equilibrata';
-  const phaseLabel = isMatchFinished && playback.currentSecond >= matchReplay.durationSeconds - 0.05
+  const phaseLabel = isMatchFinished && displaySecond >= matchReplay.durationSeconds - 0.05
     ? 'Finale'
     : interpolatedFrame ? getReplayPhaseLabel(interpolatedFrame.phase) : 'In attesa';
 
@@ -795,13 +817,14 @@ function LiveTacticalBoard({
         />
 
         <MatchPlaybackControls
-          currentSecond={playback.currentSecond}
+          currentSecond={displaySecond}
           durationSeconds={matchReplay.durationSeconds}
-          playing={playback.playing}
+          playing={isMatchFinished ? playback.playing : false}
           speed={playback.speed}
           phaseLabel={phaseLabel}
           possessionLabel={possessionLabel}
           markers={timelineMarkers}
+          readOnly={!isMatchFinished}
           onTick={handleTick}
           onTogglePlay={handleTogglePlay}
           onSpeedChange={handleSpeedChange}
@@ -892,6 +915,14 @@ export default function MatchCenter({
 }: MatchCenterProps) {
   const [gameState, setGameState] = useState<'preview' | 'playing' | 'finished'>('preview');
   const [minute, setMinute] = useState(0);
+  // Unica sorgente di verita' del tempo partita in secondi simulati continui (0..5400): il minuto intero
+  // resta 'minute' (usato per generare eventi/gol), ma timer, replay tattico e timeline leggono tutti
+  // 'matchClockSeconds'. E' ancorato a 'minute*60' e avanza frazione per frazione dentro il minuto
+  // corrente secondo la stessa formula (realMsPerSimulatedMinute) che scandisce il tick del motore:
+  // fractionalSecondsRef sopravvive a un cambio di velocita' (nessun salto), viene azzerato solo quando
+  // 'minute' scatta davvero (nuovo minuto = nuova ancora).
+  const [matchClockSeconds, setMatchClockSeconds] = useState(0);
+  const fractionalSecondsWithinMinuteRef = useRef(0);
   const [scoreUser, setScoreUser] = useState(0);
   const [scoreOpponent, setScoreOpponent] = useState(0);
   const [liveEvents, setLiveEvents] = useState<MatchEvent[]>([]);
@@ -1224,6 +1255,9 @@ export default function MatchCenter({
     if (simInterval.current) clearInterval(simInterval.current);
 
     simInterval.current = setInterval(() => {
+      // Ogni tick del motore rappresenta esattamente 1' simulato: e' anche la nuova ancora (minuto*60)
+      // da cui l'orologio continuo (matchClockSeconds) riparte, cosi' i due non divergono mai.
+      fractionalSecondsWithinMinuteRef.current = 0;
       setMinute(prev => {
         const nextMin = prev + 1;
         const possessionBase =
@@ -1352,6 +1386,9 @@ export default function MatchCenter({
         if (nextMin >= 90) {
           if (simInterval.current) clearInterval(simInterval.current);
           setGameState('finished');
+          // Fissa subito l'orologio unico a fine partita: niente frame residuo dove il timer segna 90'
+          // ma il replay e' ancora a un secondo precedente in attesa del prossimo requestAnimationFrame.
+          setMatchClockSeconds(FULL_MATCH_SIMULATED_MINUTES * 60);
           return 90;
         }
 
@@ -1364,9 +1401,45 @@ export default function MatchCenter({
     };
   }, [currentMatchPlan, fitnessReport.performanceSwing, gameState, handleOpponentSubstitution, liveTactic, matchBalance.tacticalDisorder, matchEdge, nextMatch.opponent, opponentRating, opponentRedCards, personalityReport.chanceSwing, personalityReport.cohesionSwing, personalityReport.foulSwing, pushEvent, resolveShot, rivalAdaptation.opponentBoost, rivalAdaptation.userAttackPenalty, simSpeed, startingPlayers, tacticalReport, userRedCards]);
 
+  // Orologio continuo (unica sorgente per timer/replay/timeline): accumula frazioni di secondo simulato
+  // ad ogni frame (come il vecchio orologio del replay), ma sempre ancorato a 'minute*60' e alla stessa
+  // formula di velocita' del motore. fractionalSecondsWithinMinuteRef sopravvive a un riavvio di questo
+  // effetto (es. cambio di simSpeed): un cambio di velocita' in corsa cambia solo il ritmo con cui la
+  // frazione continua a crescere, mai il punto da cui riparte (nessun salto avanti/indietro).
+  useEffect(() => {
+    if (gameState !== 'playing') return undefined;
+
+    let rafId = 0;
+    let lastFrameAt: number | null = null;
+    const step = (timestamp: number) => {
+      if (lastFrameAt === null) lastFrameAt = timestamp;
+      const deltaMs = timestamp - lastFrameAt;
+      lastFrameAt = timestamp;
+
+      const simSecondsPerRealMs = 60 / realMsPerSimulatedMinute(simSpeed);
+      fractionalSecondsWithinMinuteRef.current = clamp(
+        fractionalSecondsWithinMinuteRef.current + deltaMs * simSecondsPerRealMs,
+        0,
+        59.98
+      );
+      const nextClockSeconds = clamp(
+        minute * 60 + fractionalSecondsWithinMinuteRef.current,
+        0,
+        FULL_MATCH_SIMULATED_MINUTES * 60
+      );
+      setMatchClockSeconds(nextClockSeconds);
+      rafId = requestAnimationFrame(step);
+    };
+
+    rafId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafId);
+  }, [gameState, minute, simSpeed]);
+
   const startSimulation = () => {
     setGameState('playing');
     setMinute(0);
+    setMatchClockSeconds(0);
+    fractionalSecondsWithinMinuteRef.current = 0;
     setScoreUser(0);
     setScoreOpponent(0);
     setLiveEvents([]);
@@ -2674,7 +2747,7 @@ export default function MatchCenter({
               </p>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', width: '100%', maxWidth: '280px', marginBottom: '18px' }}>
-                {([1, 2, 4, 8] as SimSpeed[]).map(speed => (
+                {([1, 2, 3, 4, 5] as SimSpeed[]).map(speed => (
                   <button
                     key={speed}
                     onClick={() => setSimSpeed(speed)}
@@ -2778,6 +2851,7 @@ export default function MatchCenter({
               report={tacticalReport}
               stats={liveStats}
               minute={minute}
+              authoritativeMatchSeconds={matchClockSeconds}
               matchEdge={matchEdge}
               teamName={teamName}
               opponentName={nextMatch.opponent}
@@ -2872,7 +2946,7 @@ export default function MatchCenter({
                 </h3>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
-                  {([1, 2, 4, 8] as SimSpeed[]).map(speed => (
+                  {([1, 2, 3, 4, 5] as SimSpeed[]).map(speed => (
                     <button
                       key={speed}
                       onClick={() => setSimSpeed(speed)}

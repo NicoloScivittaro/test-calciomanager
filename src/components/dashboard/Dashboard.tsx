@@ -106,7 +106,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
 
   const teamButtonStyle: React.CSSProperties = {
     background: 'none',
-    border: '1px solid transparent',
+    border: '1px solid var(--border-light)',
     color: 'inherit',
     cursor: 'pointer',
     borderRadius: 'var(--radius-md)',
@@ -349,7 +349,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
         }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <span className="badge badge-MF" style={{ background: 'rgba(16,185,129,0.15)', color: 'var(--color-pitch)' }}>
+              <span className="badge" style={{ background: 'rgba(16,185,129,0.15)', color: 'var(--color-pitch)', border: '1px solid rgba(16,185,129,0.3)' }}>
                 PROSSIMA PARTITA - SERIE A
               </span>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{nextMatch.stadium}</span>
@@ -362,7 +362,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                 tabIndex={0}
                 onClick={() => openClubInfo(homeTeam.club, homeTeam.name)}
                 onKeyDown={(event) => handleClubKeyDown(event, homeTeam.club, homeTeam.name)}
-                style={teamButtonStyle}
+                className="ui-card-hover" style={teamButtonStyle}
                 aria-label={`Apri scheda club ${homeTeam.name}`}
               >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', width: '120px' }}>
@@ -384,7 +384,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                 tabIndex={0}
                 onClick={() => openClubInfo(awayTeam.club, awayTeam.name)}
                 onKeyDown={(event) => handleClubKeyDown(event, awayTeam.club, awayTeam.name)}
-                style={teamButtonStyle}
+                className="ui-card-hover" style={teamButtonStyle}
                 aria-label={`Apri scheda club ${awayTeam.name}`}
               >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', width: '120px' }}>
@@ -616,6 +616,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                 {mostLovedPlayers.map(({ standing, player }) => (
                   <button
                     key={player.id}
+                    className="ui-card-hover"
                     onClick={() => onNavigate('squad')}
                     style={{ textAlign: 'left', padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'rgba(16,185,129,0.06)', cursor: 'pointer', font: 'inherit', color: 'inherit' }}
                   >
@@ -634,6 +635,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                 {mostCriticizedPlayers.map(({ standing, player }) => (
                   <button
                     key={player.id}
+                    className="ui-card-hover"
                     onClick={() => onNavigate('squad')}
                     style={{ textAlign: 'left', padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'rgba(239,68,68,0.06)', cursor: 'pointer', font: 'inherit', color: 'inherit' }}
                   >
@@ -831,6 +833,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                   style={{
                     backgroundColor: 'rgba(26, 33, 42, 0.3)',
                     border: '1px solid var(--border-light)',
+                    borderLeft: '3px solid var(--color-pitch)',
                     borderRadius: 'var(--radius-sm)',
                     padding: '12px 16px',
                     position: 'relative'
@@ -1150,6 +1153,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                 {unavailablePlayers.map(({ player, summary }) => (
                   <button
                     key={player.id}
+                    className="ui-card-hover"
                     onClick={() => onNavigate('squad')}
                     style={{ textAlign: 'left', padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'rgba(239,68,68,0.06)', cursor: 'pointer', font: 'inherit', color: 'inherit' }}
                   >
@@ -1202,6 +1206,7 @@ export default function Dashboard({ players, calendar, standings, news, teamName
                 {growingPlayers.map(({ player, development }) => (
                   <button
                     key={player.id}
+                    className="ui-card-hover"
                     onClick={() => onNavigate('squad')}
                     style={{ textAlign: 'left', padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'rgba(16,185,129,0.06)', cursor: 'pointer', font: 'inherit', color: 'inherit' }}
                   >
@@ -1421,25 +1426,18 @@ export default function Dashboard({ players, calendar, standings, news, teamName
               </p>
             )}
             <button
+              className="dashboard-gold-cta"
               onClick={() => onNavigate('market')}
               style={{
                 width: '100%',
-                backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                border: '1px solid rgba(245, 158, 11, 0.3)',
-                color: 'var(--color-gold)',
                 padding: '8px 12px',
-                borderRadius: 'var(--radius-sm)',
                 fontSize: '0.75rem',
                 fontWeight: 700,
-                cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '6px',
-                transition: 'background-color 0.2s'
+                gap: '6px'
               }}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(245, 158, 11, 0.2)'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(245, 158, 11, 0.1)'}
             >
               Apri Calciomercato <ArrowRight size={12} />
             </button>
